@@ -51,6 +51,10 @@ st.markdown("""
 # ─────────────────────────────────────────────
 if 'registro_operaciones_en_vivo' not in st.session_state:
     st.session_state['registro_operaciones_en_vivo'] = []
+if 'snapshots' not in st.session_state:
+    st.session_state['snapshots'] = []          # historial equity/balance/margin
+if 'posiciones_abiertas' not in st.session_state:
+    st.session_state['posiciones_abiertas'] = {} # ticket → datos
 if 'capital_inicial' not in st.session_state:
     st.session_state['capital_inicial'] = 10000.0
 
@@ -60,18 +64,87 @@ if 'capital_inicial' not in st.session_state:
 query_params = st.query_params
 if "action" in query_params and query_params["action"] == "webhook_mt5":
     try:
-        nuevo_trade = {
-            "Fecha":     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "Magic":     str(query_params.get("magic", "0")),
-            "Simbolo":   str(query_params.get("symbol", "PORTFOLIO")),
-            "Tipo":      str(query_params.get("type", "LIVE")),
-            "Beneficio": float(query_params.get("profit", "0.0")),
-            "Equity":    float(query_params.get("equity", "0.0"))
-        }
-        registros = st.session_state['registro_operaciones_en_vivo']
-        if not registros or registros[-1]["Equity"] != nuevo_trade["Equity"]:
-            registros.append(nuevo_trade)
-    except Exception:
+        tipo = str(query_params.get("type", "LIVE"))
+        ts   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        if tipo == "SNAPSHOT":
+            snap = {
+                "Fecha":      ts,
+                "Equity":     float(query_params.get("equity", 0)),
+                "Balance":    float(query_params.get("balance", 0)),
+                "Margin":     float(query_params.get("margin", 0)),
+                "FreeMargin": float(query_params.get("free_margin", 0)),
+                "ProfitFlot": float(query_params.get("profit_flot", 0)),
+                "DD_Equity":  float(query_params.get("dd_equity", 0)),
+                "DD_Balance": float(query_params.get("dd_balance", 0)),
+            }
+            snaps = st.session_state['snapshots']
+            if not snaps or snaps[-1]["Equity"] != snap["Equity"]:
+                snaps.append(snap)
+            # También al registro general para mantener compatibilidad
+            st.session_state['registro_operaciones_en_vivo'].append({
+                "Fecha": ts, "Magic": "0", "Simbolo": "ACCOUNT",
+                "Tipo": "SNAPSHOT", "Beneficio": snap["ProfitFlot"], "Equity": snap["Equity"],
+                "Balance": snap["Balance"], "Commission": 0, "Swap": 0, "ProfitNeto": snap["ProfitFlot"]
+            })
+
+        elif tipo == "POSITION_OPEN":
+            ticket = str(query_params.get("ticket", "0"))
+            st.session_state['posiciones_abiertas'][ticket] = {
+                "Fecha":      ts,
+                "Magic":      str(query_params.get("magic", "0")),
+                "Simbolo":    str(query_params.get("symbol", "")),
+                "Direccion":  str(query_params.get("direction", "")),
+                "Lots":       float(query_params.get("lots", 0)),
+                "PriceOpen":  float(query_params.get("price_open", 0)),
+                "PriceCur":   float(query_params.get("price_cur", 0)),
+                "Profit":     float(query_params.get("profit", 0)),
+                "Swap":       float(query_params.get("swap", 0)),
+                "SL":         float(query_params.get("sl", 0)),
+                "TP":         float(query_params.get("tp", 0)),
+            }
+
+        elif tipo == "CLOSE":
+            ticket = str(query_params.get("ticket", "0"))
+            profit_neto = float(query_params.get("profit_net",
+                          float(query_params.get("profit", 0))))
+            nuevo_trade = {
+                "Fecha":       ts,
+                "Magic":       str(query_params.get("magic", "0")),
+                "Simbolo":     str(query_params.get("symbol", "")),
+                "Tipo":        "CLOSE",
+                "Direccion":   str(query_params.get("direction", "")),
+                "Lots":        float(query_params.get("lots", 0)),
+                "Precio":      float(query_params.get("price", 0)),
+                "Beneficio":   float(query_params.get("profit", 0)),
+                "Commission":  float(query_params.get("commission", 0)),
+                "Swap":        float(query_params.get("swap", 0)),
+                "ProfitNeto":  profit_neto,
+                "Equity":      float(query_params.get("equity", 0)),
+                "Balance":     float(query_params.get("equity", 0)),  # approx
+            }
+            # Evitar duplicados por ticket
+            registros = st.session_state['registro_operaciones_en_vivo']
+            tickets_existentes = [r.get("Ticket","") for r in registros]
+            if ticket not in tickets_existentes:
+                nuevo_trade["Ticket"] = ticket
+                registros.append(nuevo_trade)
+            # Remover de posiciones abiertas si estaba
+            st.session_state['posiciones_abiertas'].pop(ticket, None)
+
+        else:
+            # Compatibilidad con envíos legacy
+            nuevo_trade = {
+                "Fecha": ts, "Magic": str(query_params.get("magic","0")),
+                "Simbolo": str(query_params.get("symbol","PORTFOLIO")),
+                "Tipo": tipo, "Beneficio": float(query_params.get("profit",0)),
+                "Equity": float(query_params.get("equity",0)),
+                "Commission": 0, "Swap": 0, "ProfitNeto": float(query_params.get("profit",0))
+            }
+            registros = st.session_state['registro_operaciones_en_vivo']
+            if not registros or registros[-1]["Equity"] != nuevo_trade["Equity"]:
+                registros.append(nuevo_trade)
+    except Exception as e:
         pass
 
 # ─────────────────────────────────────────────
@@ -495,9 +568,21 @@ with tab2:
                 st.metric("WR",     f"{met_ea.get('win_rate', 0):.0f}%")
                 st.metric("Trades", str(met_ea.get('total_trades', 0)))
 
+    # ── POSICIONES ABIERTAS ──────────────────────
+    posiciones = st.session_state.get('posiciones_abiertas', {})
+    if posiciones:
+        st.write("---")
+        st.subheader("🔴 Posiciones Abiertas en este Momento")
+        df_pos = pd.DataFrame(list(posiciones.values()))
+        if filtro_magic != "TODOS":
+            df_pos = df_pos[df_pos['Magic'] == filtro_magic]
+        if not df_pos.empty:
+            cols_mostrar = ['Magic','Simbolo','Direccion','Lots','PriceOpen','PriceCur','Profit','Swap','SL','TP']
+            cols_mostrar = [c for c in cols_mostrar if c in df_pos.columns]
+            st.dataframe(df_pos[cols_mostrar], use_container_width=True)
+            st.metric("💰 P&L Flotante Total", f"${df_pos['Profit'].sum():,.2f}")
+
     # ── TABLA DE OPERACIONES ─────────────────────
-    with st.expander("📋 Ver historial de operaciones recibidas"):
-        st.dataframe(
-            df_filtrado.sort_values('Fecha', ascending=False).reset_index(drop=True),
-            use_container_width=True
-        )
+    with st.expander("📋 Ver historial de operaciones cerradas"):
+        df_closed = df_filtrado[df_filtrado['Tipo']=='CLOSE'] if 'Tipo' in df_filtrado.columns else df_filtrado
+        st.dataframe(df_closed.sort_values('Fecha', ascending=False).reset_index(drop=True), use_container_width=True)
