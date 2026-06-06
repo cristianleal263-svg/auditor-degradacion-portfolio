@@ -296,7 +296,7 @@ def color_sharpe(s):
 # LAYOUT PRINCIPAL
 # ─────────────────────────────────────────────
 st.title("🦁 Centro de Control de Portfolio — Darwinex Zero")
-tab1, tab2 = st.tabs(["📉 Comparador de Degradación (QA vs Real)", "⚡ Monitor de EAs en Tiempo Real"])
+tab1, tab2, tab3 = st.tabs(["📉 Comparador de Degradación (QA vs Real)", "⚡ Monitor de EAs en Tiempo Real", "📊 Análisis Histórico por EA"])
 
 # ══════════════════════════════════════════════
 # TAB 1 — ANÁLISIS ESTÁTICO
@@ -586,3 +586,267 @@ with tab2:
     with st.expander("📋 Ver historial de operaciones cerradas"):
         df_closed = df_filtrado[df_filtrado['Tipo']=='CLOSE'] if 'Tipo' in df_filtrado.columns else df_filtrado
         st.dataframe(df_closed.sort_values('Fecha', ascending=False).reset_index(drop=True), use_container_width=True)
+
+# ══════════════════════════════════════════════
+# TAB 3 — ANÁLISIS HISTÓRICO POR EA
+# ══════════════════════════════════════════════
+with tab3:
+    st.subheader("📊 Análisis Histórico por EA — Reporte MT5")
+    st.caption("Subí el reporte de historial de MT5 (HTML o CSV). Se desglosa automáticamente por Magic Number.")
+
+    archivo_hist = st.file_uploader(
+        "Subir historial completo de MT5 (Statement / Account History)",
+        type=["csv","xlsx","html","htm"], key="hist_ea"
+    )
+
+    if archivo_hist:
+        try:
+            df_hist = leer_archivo_inteligente(archivo_hist)
+
+            # Detectar columnas clave
+            cols_lower = {str(c).lower().strip(): c for c in df_hist.columns}
+
+            # Fecha
+            col_fecha = None
+            for k in ['close time','time','fecha','date','open time','close_time']:
+                if k in cols_lower:
+                    col_fecha = cols_lower[k]; break
+
+            # Profit
+            col_profit = None
+            for k in ['profit','profit/loss','p/l in money','beneficio','ganancia','p/l']:
+                if k in cols_lower:
+                    col_profit = cols_lower[k]; break
+
+            # Magic
+            col_magic = None
+            for k in ['magic','magic number','magic_number']:
+                if k in cols_lower:
+                    col_magic = cols_lower[k]; break
+
+            # Symbol
+            col_symbol = None
+            for k in ['symbol','simbolo','instrumento','instrument']:
+                if k in cols_lower:
+                    col_symbol = cols_lower[k]; break
+
+            # Commission / Swap
+            col_comm = cols_lower.get('commission', cols_lower.get('comision', None))
+            col_swap = cols_lower.get('swap', None)
+
+            if col_fecha is None or col_profit is None:
+                st.error("❌ No se encontraron columnas de Fecha y/o Profit. Verificá el formato del archivo.")
+                st.dataframe(df_hist.head(5))
+                st.stop()
+
+            # Limpieza
+            df_hist['_fecha'] = pd.to_datetime(df_hist[col_fecha], errors='coerce')
+            df_hist = df_hist.dropna(subset=['_fecha'])
+            df_hist['_periodo'] = df_hist['_fecha'].dt.to_period('M').astype(str)
+
+            profit_col = df_hist[col_profit].astype(str).str.replace(r'[^\d\.\-]','',regex=True)
+            df_hist['_profit'] = pd.to_numeric(profit_col, errors='coerce').fillna(0)
+
+            if col_comm:
+                df_hist['_comm'] = pd.to_numeric(
+                    df_hist[col_comm].astype(str).str.replace(r'[^\d\.\-]','',regex=True),
+                    errors='coerce').fillna(0)
+            else:
+                df_hist['_comm'] = 0
+
+            if col_swap:
+                df_hist['_swap'] = pd.to_numeric(
+                    df_hist[col_swap].astype(str).str.replace(r'[^\d\.\-]','',regex=True),
+                    errors='coerce').fillna(0)
+            else:
+                df_hist['_swap'] = 0
+
+            df_hist['_profit_neto'] = df_hist['_profit'] + df_hist['_comm'] + df_hist['_swap']
+
+            # Magic Number
+            if col_magic:
+                df_hist['_magic'] = df_hist[col_magic].astype(str).str.strip()
+            else:
+                # Si no hay columna magic, agrupar por symbol como fallback
+                if col_symbol:
+                    df_hist['_magic'] = df_hist[col_symbol].astype(str).str.strip()
+                    st.warning("⚠️ No se encontró columna Magic Number. Agrupando por Symbol.")
+                else:
+                    df_hist['_magic'] = "CUENTA"
+
+            # Filtrar solo trades (profit != 0)
+            df_trades_hist = df_hist[df_hist['_profit'] != 0].copy()
+
+            if df_trades_hist.empty:
+                st.warning("No se encontraron trades con profit ≠ 0 en el archivo.")
+                st.stop()
+
+            magics_hist = sorted(df_trades_hist['_magic'].unique().tolist())
+            periodos_hist = sorted(df_trades_hist['_periodo'].unique().tolist())
+
+            st.success(f"✅ {len(df_trades_hist)} trades | {len(magics_hist)} EAs detectados | {len(periodos_hist)} meses")
+            st.write("---")
+
+            # ── Selector de EA ──────────────────────────
+            ea_sel = st.selectbox("Seleccioná un EA para analizar",
+                                  ["TODOS"] + magics_hist,
+                                  format_func=lambda x: f"📊 Portfolio Completo" if x=="TODOS" else f"🤖 EA {x}")
+
+            df_ea_sel = df_trades_hist if ea_sel == "TODOS" else df_trades_hist[df_trades_hist['_magic']==ea_sel]
+
+            # ── Métricas globales del EA seleccionado ───
+            ganancias_h = df_ea_sel[df_ea_sel['_profit'] > 0]['_profit']
+            perdidas_h  = df_ea_sel[df_ea_sel['_profit'] < 0]['_profit']
+            gross_p = ganancias_h.sum()
+            gross_l = abs(perdidas_h.sum())
+            pf_h    = round(gross_p / gross_l, 2) if gross_l > 0 else float('inf')
+            wr_h    = round(len(ganancias_h) / len(df_ea_sel) * 100, 1) if len(df_ea_sel) > 0 else 0
+            net_h   = df_ea_sel['_profit_neto'].sum()
+            avg_w_h = round(ganancias_h.mean(), 2) if not ganancias_h.empty else 0
+            avg_l_h = round(perdidas_h.mean(), 2)  if not perdidas_h.empty else 0
+            exp_h   = round((wr_h/100 * avg_w_h) + ((1-wr_h/100) * avg_l_h), 2)
+            total_comm_h = df_ea_sel['_comm'].sum()
+            total_swap_h = df_ea_sel['_swap'].sum()
+
+            g1,g2,g3,g4,g5 = st.columns(5)
+            pf_str_h = f"{pf_h:.2f}" if pf_h != float('inf') else "∞"
+            g1.metric("Profit Factor",    pf_str_h)
+            g2.metric("Win Rate",         f"{wr_h:.1f}%")
+            g3.metric("Net Profit",       f"${net_h:,.2f}")
+            g4.metric("Expectancy",       f"${exp_h:,.2f}")
+            g5.metric("Total Trades",     str(len(df_ea_sel)))
+
+            g6,g7,g8,_,_ = st.columns(5)
+            g6.metric("Avg Win",          f"${avg_w_h:,.2f}")
+            g7.metric("Avg Loss",         f"${avg_l_h:,.2f}")
+            g8.metric("Costos (Com+Swap)", f"${total_comm_h+total_swap_h:,.2f}")
+
+            st.write("---")
+
+            # ── Tabla mensual ────────────────────────────
+            st.subheader("📅 Desglose Mensual")
+
+            def metricas_mes(grp):
+                g = grp[grp['_profit'] > 0]['_profit']
+                l = grp[grp['_profit'] < 0]['_profit']
+                pf_m = round(g.sum()/abs(l.sum()), 2) if abs(l.sum()) > 0 else float('inf')
+                wr_m = round(len(g)/len(grp)*100, 1) if len(grp) > 0 else 0
+                return pd.Series({
+                    'Trades':      len(grp),
+                    'Net Profit':  round(grp['_profit_neto'].sum(), 2),
+                    'Gross Profit':round(g.sum(), 2),
+                    'Gross Loss':  round(l.sum(), 2),
+                    'PF':          pf_m if pf_m != float('inf') else 999,
+                    'WR%':         wr_m,
+                    'Avg Win':     round(g.mean(), 2) if not g.empty else 0,
+                    'Avg Loss':    round(l.mean(), 2) if not l.empty else 0,
+                    'Comisiones':  round(grp['_comm'].sum(), 2),
+                    'Swap':        round(grp['_swap'].sum(), 2),
+                })
+
+            df_mensual = df_ea_sel.groupby('_periodo').apply(metricas_mes).reset_index()
+            df_mensual.rename(columns={'_periodo':'Mes'}, inplace=True)
+
+            # Semáforo degradación: últimos 2 meses vs promedio histórico
+            if len(df_mensual) >= 3:
+                pf_hist_avg = df_mensual['PF'][:-2].mean()
+                wr_hist_avg = df_mensual['WR%'][:-2].mean()
+                np_hist_avg = df_mensual['Net Profit'][:-2].mean()
+
+                def semaforo_pf(val):
+                    if val >= pf_hist_avg * 0.9: return '🟢'
+                    if val >= pf_hist_avg * 0.7: return '🟡'
+                    return '🔴'
+                def semaforo_wr(val):
+                    if val >= wr_hist_avg * 0.9: return '🟢'
+                    if val >= wr_hist_avg * 0.7: return '🟡'
+                    return '🔴'
+
+                df_mensual['Estado PF'] = df_mensual['PF'].apply(semaforo_pf)
+                df_mensual['Estado WR'] = df_mensual['WR%'].apply(semaforo_wr)
+
+                st.caption(f"Semáforo basado en promedio histórico — PF ref: {pf_hist_avg:.2f} | WR ref: {wr_hist_avg:.1f}%")
+
+            st.dataframe(df_mensual, use_container_width=True, hide_index=True)
+
+            # ── Gráfico mensual ──────────────────────────
+            st.write("---")
+            st.subheader("📈 Equity Acumulada & Profit Mensual")
+
+            fig3 = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                                 row_heights=[0.6, 0.4], vertical_spacing=0.06,
+                                 subplot_titles=("Equity Acumulada", "Profit Neto Mensual"))
+
+            equity_acum = df_mensual['Net Profit'].cumsum()
+            fig3.add_trace(go.Scatter(
+                x=df_mensual['Mes'], y=equity_acum,
+                name="Equity Acum.", line=dict(color='#00d4ff', width=2),
+                fill='tozeroy', fillcolor='rgba(0,212,255,0.08)'
+            ), row=1, col=1)
+
+            colores_bars = ['#2ecc71' if v >= 0 else '#e74c3c' for v in df_mensual['Net Profit']]
+            fig3.add_trace(go.Bar(
+                x=df_mensual['Mes'], y=df_mensual['Net Profit'],
+                name="Profit Mensual", marker_color=colores_bars
+            ), row=2, col=1)
+
+            fig3.add_hline(y=0, line_dash="dot", line_color="#666", row=2, col=1)
+            fig3.update_layout(template="plotly_dark", height=480,
+                               margin=dict(t=30,b=20), showlegend=False)
+            st.plotly_chart(fig3, use_container_width=True)
+
+            # ── Comparador entre EAs ─────────────────────
+            if ea_sel == "TODOS" and len(magics_hist) > 1:
+                st.write("---")
+                st.subheader("🔬 Ranking de EAs por Profit Factor")
+
+                resumen_eas = []
+                for mg in magics_hist:
+                    d = df_trades_hist[df_trades_hist['_magic']==mg]
+                    g = d[d['_profit']>0]['_profit']
+                    l = d[d['_profit']<0]['_profit']
+                    pf_ea = round(g.sum()/abs(l.sum()),2) if abs(l.sum())>0 else 999
+                    resumen_eas.append({
+                        'EA (Magic)':   mg,
+                        'Trades':       len(d),
+                        'Net Profit':   round(d['_profit_neto'].sum(), 2),
+                        'PF':           pf_ea,
+                        'WR%':          round(len(g)/len(d)*100,1) if len(d)>0 else 0,
+                        'Avg Win':      round(g.mean(),2) if not g.empty else 0,
+                        'Avg Loss':     round(l.mean(),2) if not l.empty else 0,
+                        'Costos':       round(d['_comm'].sum()+d['_swap'].sum(),2),
+                    })
+                df_rank = pd.DataFrame(resumen_eas).sort_values('PF', ascending=False).reset_index(drop=True)
+
+                # Barras de PF por EA
+                fig_rank = go.Figure(go.Bar(
+                    x=df_rank['EA (Magic)'].astype(str),
+                    y=df_rank['PF'],
+                    marker_color=['#2ecc71' if v>=1.5 else '#f39c12' if v>=1.2 else '#e74c3c'
+                                  for v in df_rank['PF']],
+                    text=df_rank['PF'].apply(lambda x: f"{x:.2f}"),
+                    textposition='outside'
+                ))
+                fig_rank.add_hline(y=1.5, line_dash="dash", line_color="#2ecc71",
+                                   annotation_text="PF 1.5 objetivo")
+                fig_rank.add_hline(y=1.2, line_dash="dash", line_color="#f39c12",
+                                   annotation_text="PF 1.2 mínimo")
+                fig_rank.update_layout(template="plotly_dark", height=320,
+                                       xaxis_title="EA", yaxis_title="Profit Factor",
+                                       margin=dict(t=20,b=20))
+                st.plotly_chart(fig_rank, use_container_width=True)
+                st.dataframe(df_rank, use_container_width=True, hide_index=True)
+
+        except Exception as e:
+            st.error(f"❌ Error procesando historial: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+    else:
+        st.info("💡 Exportá el historial desde MT5: Account History → click derecho → Save as Report (HTML) o Save as Detailed Report (CSV)")
+        st.markdown("""
+        **Cómo exportar desde MT5:**
+        1. `View → Terminal → Account History`
+        2. Seleccioná el período completo (click derecho → All History)
+        3. Click derecho → **Save as Detailed Report** → guardá como HTML
+        4. Subí ese archivo aquí
+        """)
