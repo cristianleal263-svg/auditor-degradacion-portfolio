@@ -57,11 +57,7 @@ def leer_archivo_inteligente(archivo):
     raise ValueError("Formato no soportado.")
 
 def encontrar_columnas_universal(df):
-    """Busca de forma automática e inteligente qué columnas contienen fechas y cuáles números de beneficio."""
-    col_fecha = None
-    col_profit = None
-    
-    # Intentar coincidencia por nombres comunes (Mapeo agresivo)
+    col_fecha, col_profit = None, None
     mapeo_fechas = ['close time', 'open time', 'fecha', 'time', 'date', 'tiempo', 'close_time', 'open_time']
     mapeo_profits = ['profit/loss', 'p/l in money', 'profit', 'loss', 'beneficio', 'p/l', 'ganancia', 'ganancia/pérdida', 'monto']
     
@@ -71,40 +67,33 @@ def encontrar_columnas_universal(df):
         if mf in columnas_lower:
             col_fecha = df.columns[columnas_lower.index(mf)]
             break
-            
     for mp in mapeo_profits:
         if mp in columnas_lower:
             col_profit = df.columns[columnas_lower.index(mp)]
             break
             
-    # Si la búsqueda por nombre falla, analizar el contenido fila por fila
     if col_fecha is None or col_profit is None:
         for col in df.columns:
             primeros_valores = df[col].dropna().head(10).astype(str)
-            
-            # Detectar si la columna parece una fecha (contiene patrones como AAAA.MM.DD o DD/MM/AAAA)
             if col_fecha is None and primeros_valores.str.contains(r'\d{2,4}[-./]\d{2}[-./]\d{2,4}').any():
                 col_fecha = col
-                
-            # Detectar si la columna contiene los datos numéricos de ganancias
             if col_profit is None and col != col_fecha:
                 valores_numericos = pd.to_numeric(primeros_valores.str.replace(r'[^\d\.\-]', '', regex=True), errors='coerce')
                 if valores_numericos.notna().sum() > 3 and not (valores_numericos == 0).all():
                     col_profit = col
 
     if col_fecha is None or col_profit is None:
-        raise ValueError(f"No se detectaron columnas válidas de Fecha/Profit. Columnas leídas: {list(df.columns)}")
-        
+        raise ValueError(f"No se detectaron columnas válidas de Fecha/Profit. Columnas: {list(df.columns)}")
     return col_fecha, col_profit
 
 if archivo_qa and archivo_real:
     try:
-        # --- PROCESAR COMPONENTE QUANT ANALYZER ---
+        # --- PROCESAR REPORTE QUANT ANALYZER ---
         df_qa = leer_archivo_inteligente(archivo_qa)
         archivo_real.seek(0)
         
         f_qa, p_qa = encontrar_columnas_universal(df_qa)
-        df_qa['Fecha_Clean'] = pd.to_datetime(df_qa[f_qa], errors='coerce')
+        df_qa['Fecha_Clean'] = pd.to_datetime(df_qa[f_qa], errors='coerce', dayfirst=True)
         df_qa = df_qa.dropna(subset=['Fecha_Clean'])
         df_qa['Periodo'] = df_qa['Fecha_Clean'].dt.to_period('M').astype(str)
         
@@ -115,16 +104,32 @@ if archivo_qa and archivo_real:
 
         # --- PROCESAR CUENTA REAL (BROKER) ---
         df_broker = leer_archivo_inteligente(archivo_real)
-        
         f_br, p_br = encontrar_columnas_universal(df_broker)
-        df_broker['Fecha_Clean'] = pd.to_datetime(df_broker[f_br], errors='coerce')
+        
+        # Conversión de Fecha ultra-agresiva con fallback automático
+        try:
+            df_broker['Fecha_Clean'] = pd.to_datetime(df_broker[f_br], format='mixed', errors='coerce')
+        except:
+            df_broker['Fecha_Clean'] = pd.to_datetime(df_broker[f_br], errors='coerce')
+            
         df_broker = df_broker.dropna(subset=['Fecha_Clean'])
         df_broker['Periodo'] = df_broker['Fecha_Clean'].dt.to_period('M').astype(str)
         
+        # Limpieza matemática de beneficios (Soporta comas europeas y puntos americanos)
         if df_broker[p_br].dtype == 'object':
-            df_broker[p_br] = df_broker[p_br].astype(str).str.replace(r'[^\d\.\-]', '', regex=True)
+            df_broker[p_br] = df_broker[p_br].astype(str).str.replace(' ', '')
+            if df_broker[p_br].str.contains(r'\d+,\d{2}$').any(): # Si termina en coma + dos decimales
+                df_broker[p_br] = df_broker[p_br].str.replace('.', '').str.replace(',', '.')
+            else:
+                df_broker[p_br] = df_broker[p_br].str.replace(',', '')
+            df_broker[p_br] = df_broker[p_br].str.replace(r'[^\d\.\-]', '', regex=True)
+            
         df_broker['Real'] = pd.to_numeric(df_broker[p_br], errors='coerce').fillna(0)
         df_real_mensual = df_broker.groupby('Periodo')['Real'].sum().reset_index()
+
+        # Comprobación de seguridad si el broker dio cero registros procesados
+        if df_real_mensual['Real'].sum() == 0 and len(df_broker) > 0:
+            st.warning("⚠️ Alerta técnica: El motor leyó las filas del broker pero no pudo agrupar el beneficio mensual. Comprobando compatibilidad...")
 
         # --- FUSIONAR RESULTADOS ---
         df_final = pd.merge(df_qa_mensual, df_real_mensual, on='Periodo', how='outer').fillna(0).sort_values(by='Periodo').reset_index(drop=True)
