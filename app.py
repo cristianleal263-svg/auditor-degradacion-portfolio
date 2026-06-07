@@ -1120,174 +1120,153 @@ with tab4:
 # TAB 5 — SQX VS LIVE + ALERTAS TELEGRAM
 # ══════════════════════════════════════════════
 with tab5:
+    st.subheader("🔬 Comparador SQX Backtest vs Ejecución Real")
+
     col_sqx, col_tg = st.columns([3, 1])
 
-    # ── Panel Telegram ───────────────────────
+    # ── Panel Telegram ─────────────────────────────────────────────
     with col_tg:
         st.subheader("🔔 Alertas Telegram")
         cfg = st.session_state['telegram_config']
-        token_input   = st.text_input("Bot Token", value=cfg["token"], type="password")
-        chat_id_input = st.text_input("Chat ID",   value=cfg["chat_id"])
-        activo_input  = st.toggle("Alertas activas", value=cfg["activo"])
+        token_input   = st.text_input("Bot Token", value=cfg["token"], type="password", key="tg_token")
+        chat_id_input = st.text_input("Chat ID",   value=cfg["chat_id"], key="tg_chatid")
+        activo_input  = st.toggle("Alertas activas", value=cfg["activo"], key="tg_toggle")
 
-        if st.button("💾 Guardar config Telegram"):
+        if st.button("💾 Guardar", key="tg_save"):
             st.session_state['telegram_config'] = {
                 "token":   token_input,
                 "chat_id": chat_id_input,
                 "activo":  activo_input
             }
-            st.success("Guardado ✅")
+            st.success("✅ Guardado")
 
-        if st.button("🧪 Enviar mensaje de prueba"):
-            ok = enviar_telegram("🦁 *Centro de Control activo*\nConexión Telegram verificada correctamente.")
-            st.success("Enviado ✅") if ok else st.error("Error — verificá token y chat_id")
+        if st.button("🧪 Probar conexión", key="tg_test"):
+            ok = enviar_telegram("🦁 *Centro de Control activo*\nConexión Telegram verificada.")
+            st.success("✅ Enviado") if ok else st.error("❌ Error — revisá token y chat_id")
 
         st.write("---")
         st.caption("**Alertas automáticas:**")
         st.caption("⚠️ DD > 3% por cuenta")
         st.caption("🚨 DD > 5% por cuenta")
-        st.caption("📉 Trade cerrado con pérdida > umbral (próximamente)")
-
         st.write("---")
-        st.caption("**Cómo obtener tu Chat ID:**")
-        st.caption("1. Mandá un mensaje a tu bot")
+        st.caption("**Cómo obtener Chat ID:**")
+        st.caption("1. Mensajeá a tu bot")
         st.caption("2. Abrí: `api.telegram.org/bot<TOKEN>/getUpdates`")
-        st.caption("3. Copiá el valor de `chat.id`")
+        st.caption("3. Copiá `chat.id`")
 
-    # ── Panel SQX Comparador ─────────────────
+    # ── Panel SQX ─────────────────────────────────────────────────
     with col_sqx:
-        st.subheader("🔬 Comparador SQX Backtest vs Ejecución Real")
         st.caption("Cargá el reporte HTML de SQX una vez por EA. La comparación se actualiza automáticamente con los trades en vivo.")
 
-        # Trades en vivo disponibles
-        registros = st.session_state.get('registro_operaciones_en_vivo', [])
-        df_live_all = pd.DataFrame(registros) if registros else pd.DataFrame()
-        df_live_trades = df_live_all[df_live_all.get('Tipo','') == 'CLOSE'] if 'Tipo' in df_live_all.columns else pd.DataFrame()
-
-        magics_live = []
-        if not df_live_trades.empty and 'Magic' in df_live_trades.columns:
-            magics_live = sorted(df_live_trades['Magic'].unique().tolist())
-
-        # ── Cargar benchmark SQX por EA ───────
-        st.write("**Paso 1: Cargar benchmark SQX por EA**")
-
-        with st.expander("➕ Cargar reporte SQX de un EA", expanded=len(st.session_state['sqx_benchmarks'])==0):
-            c1, c2, c3 = st.columns([1,1,2])
+        # ── Cargar benchmark ──────────────────────────────────────
+        with st.expander("➕ Cargar reporte SQX de un EA",
+                         expanded=len(st.session_state['sqx_benchmarks']) == 0):
+            c1, c2, c3 = st.columns([1, 1, 2])
             with c1:
-                magic_input = st.text_input("Magic Number del EA", placeholder="22001")
+                magic_input = st.text_input("Magic Number", placeholder="22001", key="sqx_magic")
             with c2:
-                nombre_ea   = st.text_input("Nombre del EA",       placeholder="XAUUSD_M15")
+                nombre_ea = st.text_input("Nombre EA", placeholder="XAUUSD_M15", key="sqx_nombre")
             with c3:
                 archivo_sqx = st.file_uploader("Reporte HTML de SQX / QA",
                                                type=["html","htm","csv","xlsx"], key="sqx_upload")
-
             if archivo_sqx and magic_input:
                 contenido = archivo_sqx.read()
-                metricas_sqx = parsear_sqx_html(contenido)
-                if metricas_sqx:
-                    clave = f"{magic_input}"
-                    metricas_sqx["nombre"] = nombre_ea or f"EA_{magic_input}"
-                    st.session_state['sqx_benchmarks'][clave] = metricas_sqx
-                    st.success(f"✅ Benchmark cargado — EA {magic_input} | PF: {metricas_sqx['pf']} | WR: {metricas_sqx['wr']}% | {metricas_sqx['trades']} trades")
+                bm = parsear_sqx_html(contenido)
+                if bm:
+                    bm["nombre"] = nombre_ea or f"EA_{magic_input}"
+                    st.session_state['sqx_benchmarks'][magic_input] = bm
+                    st.success(f"✅ EA {magic_input} | PF: {bm['pf']} | WR: {bm['wr']}% | {bm['trades']} trades")
                 else:
-                    st.error("❌ No se pudieron extraer métricas. Verificá que el HTML tenga la tabla de trades.")
+                    st.error("❌ No se extrajeron métricas. Verificá que el HTML tenga tabla de trades.")
 
         benchmarks = st.session_state['sqx_benchmarks']
 
         if not benchmarks:
-            st.info("Sin benchmarks cargados. Subí el reporte HTML de SQX para cada EA arriba.")
+            st.info("Sin benchmarks. Subí el HTML de SQX para cada EA arriba.")
+            st.stop()
+
+        st.write("---")
+
+        # Tabla resumen benchmarks
+        rows_bm = []
+        for mg, bm in benchmarks.items():
+            pf_str = f"{bm['pf']:.2f}" if bm['pf'] != float('inf') else "∞"
+            rows_bm.append({"Magic": mg, "EA": bm.get("nombre","?"),
+                             "PF (SQX)": pf_str, "WR% (SQX)": f"{bm['wr']:.1f}%",
+                             "Exp (SQX)": f"${bm['expectancy']:.2f}", "Trades": bm['trades']})
+        st.dataframe(pd.DataFrame(rows_bm), use_container_width=True, hide_index=True)
+        st.write("---")
+
+        # Trades en vivo
+        registros = st.session_state.get('registro_operaciones_en_vivo', [])
+        df_all = pd.DataFrame(registros) if registros else pd.DataFrame()
+        df_live_trades = pd.DataFrame()
+        if not df_all.empty and 'Tipo' in df_all.columns:
+            df_live_trades = df_all[df_all['Tipo'] == 'CLOSE'].copy()
+
+        if df_live_trades.empty:
+            st.warning("Sin trades en vivo todavía. Aparecerán cuando el mercado opere.")
         else:
-            st.write("---")
-            st.write(f"**Paso 2: Comparación automática ({len(benchmarks)} EA(s) con benchmark)**")
-
-            # Tabla de benchmarks cargados
-            rows_bm = []
             for mg, bm in benchmarks.items():
-                rows_bm.append({
-                    "Magic": mg, "EA": bm.get("nombre","?"),
-                    "PF (SQX)": f"{bm['pf']:.2f}" if bm['pf']!=float('inf') else "∞",
-                    "WR% (SQX)": f"{bm['wr']:.1f}%",
-                    "Exp (SQX)": f"${bm['expectancy']:.2f}",
-                    "Trades SQX": bm['trades'],
-                })
-            st.dataframe(pd.DataFrame(rows_bm), use_container_width=True, hide_index=True)
+                nombre = bm.get("nombre", f"EA {mg}")
+                df_ea = df_live_trades[df_live_trades['Magic'] == mg] if 'Magic' in df_live_trades.columns else pd.DataFrame()
+                n = len(df_ea)
 
-            st.write("---")
+                with st.expander(f"🤖 {nombre}  (Magic {mg}) — {n} trades en vivo", expanded=True):
+                    if df_ea.empty:
+                        st.info("Sin trades cerrados en vivo para este EA.")
+                        continue
 
-            # ── Comparación métrica a métrica ─────
-            if df_live_trades.empty:
-                st.warning("Sin trades en vivo todavía. Los datos aparecerán automáticamente cuando el mercado opere.")
-            else:
-                for mg, bm in benchmarks.items():
-                    df_ea_live = df_live_trades[df_live_trades['Magic']==mg] if 'Magic' in df_live_trades.columns else pd.DataFrame()
+                    # Métricas live
+                    profits = df_ea['Beneficio'] if 'Beneficio' in df_ea.columns else pd.Series(dtype=float)
+                    g = profits[profits > 0]
+                    l = profits[profits < 0]
+                    pf_l  = round(g.sum()/abs(l.sum()), 2) if abs(l.sum()) > 0 else float('inf')
+                    wr_l  = round(len(g)/len(profits)*100, 1) if len(profits) > 0 else 0
+                    aw_l  = round(g.mean(), 2) if not g.empty else 0
+                    al_l  = round(l.mean(), 2) if not l.empty else 0
+                    exp_l = round((wr_l/100*aw_l)+((1-wr_l/100)*al_l), 2)
 
-                    n_live = len(df_ea_live)
-                    nombre = bm.get("nombre", f"EA {mg}")
+                    # Grid comparación
+                    header = st.columns([2, 1, 1, 2])
+                    header[0].markdown("**Métrica**")
+                    header[1].markdown("**SQX**")
+                    header[2].markdown("**Live**")
+                    header[3].markdown("**Delta**")
 
-                    with st.expander(f"🤖 {nombre} (Magic {mg}) — {n_live} trades en vivo", expanded=True):
-                        if df_ea_live.empty:
-                            st.info("Sin trades cerrados en vivo para este EA.")
-                            continue
+                    comparaciones = [
+                        ("Profit Factor",  pf_l,  bm['pf'],         True),
+                        ("Win Rate %",     wr_l,  bm['wr'],         True),
+                        ("Expectancy $",   exp_l, bm['expectancy'],  True),
+                        ("Avg Win $",      aw_l,  bm['avg_win'],    True),
+                        ("Avg Loss $",     al_l,  bm['avg_loss'],   False),
+                    ]
 
-                        # Calcular métricas live
-                        profits_live = df_ea_live['Beneficio'] if 'Beneficio' in df_ea_live.columns else pd.Series([])
-                        g_live = profits_live[profits_live > 0]
-                        l_live = profits_live[profits_live < 0]
-                        pf_live  = round(g_live.sum()/abs(l_live.sum()),2) if abs(l_live.sum())>0 else float('inf')
-                        wr_live  = round(len(g_live)/len(profits_live)*100,1) if len(profits_live)>0 else 0
-                        avg_w_l  = round(g_live.mean(),2) if not g_live.empty else 0
-                        avg_l_l  = round(l_live.mean(),2) if not l_live.empty else 0
-                        exp_live = round((wr_live/100*avg_w_l)+((1-wr_live/100)*avg_l_l),2)
+                    for label, lv, sv, mayor in comparaciones:
+                        row = st.columns([2, 1, 1, 2])
+                        row[0].write(label)
+                        row[1].write(f"{sv:.2f}" if sv != float('inf') else "∞")
+                        row[2].write(f"{lv:.2f}" if lv != float('inf') else "∞")
+                        d, sem = delta_semaforo(lv, sv, mayor)
+                        row[3].write(f"{sem} {d}")
 
-                        # Grid comparación
-                        metricas_comp = [
-                            ("Profit Factor",  pf_live,  bm['pf'],        True),
-                            ("Win Rate %",     wr_live,  bm['wr'],        True),
-                            ("Expectancy $",   exp_live, bm['expectancy'], True),
-                            ("Avg Win $",      avg_w_l,  bm['avg_win'],   True),
-                            ("Avg Loss $",     avg_l_l,  bm['avg_loss'],  False),
-                        ]
+                    # Gráfico P&L acumulado
+                    if 'Fecha' in df_ea.columns:
+                        df_plot = df_ea.copy()
+                        df_plot['Fecha'] = pd.to_datetime(df_plot['Fecha'])
+                        df_plot = df_plot.sort_values('Fecha')
+                        fig_ea = go.Figure(go.Scatter(
+                            x=df_plot['Fecha'],
+                            y=df_plot['Beneficio'].cumsum(),
+                            line=dict(color='#00d4ff', width=2),
+                            fill='tozeroy', fillcolor='rgba(0,212,255,0.08)'
+                        ))
+                        fig_ea.add_hline(y=0, line_dash="dot", line_color="#666")
+                        fig_ea.update_layout(template="plotly_dark", height=180,
+                                             margin=dict(t=5,b=5,l=5,r=5),
+                                             showlegend=False, yaxis_title="P&L $")
+                        st.plotly_chart(fig_ea, use_container_width=True)
 
-                        col_h1, col_h2, col_h3, col_h4 = st.columns([2,1,1,2])
-                        col_h1.markdown("**Métrica**")
-                        col_h2.markdown("**SQX**")
-                        col_h3.markdown("**Live**")
-                        col_h4.markdown("**Delta**")
-
-                        for label, live_v, sqx_v, mayor_mejor in metricas_comp:
-                            c1,c2,c3,c4 = st.columns([2,1,1,2])
-                            c1.write(label)
-                            sqx_str  = f"{sqx_v:.2f}" if sqx_v!=float('inf') else "∞"
-                            live_str = f"{live_v:.2f}" if live_v!=float('inf') else "∞"
-                            c2.write(sqx_str)
-                            c3.write(live_str)
-                            delta_str, semaforo = delta_semaforo(live_v, sqx_v, mayor_mejor)
-                            c4.write(f"{semaforo} {delta_str}")
-
-                        # Gráfico equity live del EA
-                        if 'Equity' in df_ea_live.columns and 'Fecha' in df_ea_live.columns:
-                            df_ea_live = df_ea_live.copy()
-                            df_ea_live['Fecha'] = pd.to_datetime(df_ea_live['Fecha'])
-                            df_ea_live = df_ea_live.sort_values('Fecha')
-
-                            profit_acum = df_ea_live['Beneficio'].cumsum()
-                            fig_ea = go.Figure()
-                            fig_ea.add_trace(go.Scatter(
-                                x=df_ea_live['Fecha'], y=profit_acum,
-                                name="P&L acumulado live",
-                                line=dict(color='#00d4ff', width=2),
-                                fill='tozeroy', fillcolor='rgba(0,212,255,0.08)'
-                            ))
-                            fig_ea.add_hline(y=0, line_dash="dot", line_color="#666")
-                            fig_ea.update_layout(
-                                template="plotly_dark", height=200,
-                                margin=dict(t=10,b=10,l=10,r=10),
-                                showlegend=False,
-                                yaxis_title="P&L $"
-                            )
-                            st.plotly_chart(fig_ea, use_container_width=True)
-
-                        # Botón eliminar benchmark
-                        if st.button(f"🗑️ Eliminar benchmark EA {mg}", key=f"del_{mg}"):
-                            del st.session_state['sqx_benchmarks'][mg]
-                            st.rerun()
+                    if st.button(f"🗑️ Eliminar benchmark EA {mg}", key=f"del_{mg}"):
+                        del st.session_state['sqx_benchmarks'][mg]
+                        st.rerun()
