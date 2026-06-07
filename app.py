@@ -57,6 +57,9 @@ if 'posiciones_abiertas' not in st.session_state:
     st.session_state['posiciones_abiertas'] = {} # ticket → datos
 if 'capital_inicial' not in st.session_state:
     st.session_state['capital_inicial'] = 10000.0
+if 'cuentas' not in st.session_state:
+    # dict: account_name → {snapshots:[], trades:[], posiciones:{}, tipo:""}
+    st.session_state['cuentas'] = {}
 
 # ─────────────────────────────────────────────
 # WEBHOOK RECEPTOR
@@ -64,8 +67,21 @@ if 'capital_inicial' not in st.session_state:
 query_params = st.query_params
 if "action" in query_params and query_params["action"] == "webhook_mt5":
     try:
-        tipo = str(query_params.get("type", "LIVE"))
-        ts   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        tipo       = str(query_params.get("type", "LIVE"))
+        ts         = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        acc_name   = str(query_params.get("account", "default"))
+        acc_type   = str(query_params.get("acc_type", "DESCONOCIDO"))
+
+        # Inicializar estructura de cuenta si es nueva
+        cuentas = st.session_state['cuentas']
+        if acc_name not in cuentas:
+            cuentas[acc_name] = {
+                "tipo": acc_type,
+                "snapshots": [],
+                "trades": [],
+                "posiciones": {}
+            }
+        cuenta = cuentas[acc_name]
 
         if tipo == "SNAPSHOT":
             snap = {
@@ -81,16 +97,18 @@ if "action" in query_params and query_params["action"] == "webhook_mt5":
             snaps = st.session_state['snapshots']
             if not snaps or snaps[-1]["Equity"] != snap["Equity"]:
                 snaps.append(snap)
-            # También al registro general para mantener compatibilidad
-            st.session_state['registro_operaciones_en_vivo'].append({
-                "Fecha": ts, "Magic": "0", "Simbolo": "ACCOUNT",
-                "Tipo": "SNAPSHOT", "Beneficio": snap["ProfitFlot"], "Equity": snap["Equity"],
-                "Balance": snap["Balance"], "Commission": 0, "Swap": 0, "ProfitNeto": snap["ProfitFlot"]
-            })
+            # Registro general (compatibilidad Tab2) + multi-cuenta
+            reg = {"Fecha": ts, "Magic": "0", "Simbolo": "ACCOUNT",
+                   "Tipo": "SNAPSHOT", "Beneficio": snap["ProfitFlot"], "Equity": snap["Equity"],
+                   "Balance": snap["Balance"], "Commission": 0, "Swap": 0,
+                   "ProfitNeto": snap["ProfitFlot"], "Account": acc_name}
+            st.session_state['registro_operaciones_en_vivo'].append(reg)
+            if not cuenta["snapshots"] or cuenta["snapshots"][-1]["Equity"] != snap["Equity"]:
+                cuenta["snapshots"].append(snap)
 
         elif tipo == "POSITION_OPEN":
             ticket = str(query_params.get("ticket", "0"))
-            st.session_state['posiciones_abiertas'][ticket] = {
+            pos_data = {
                 "Fecha":      ts,
                 "Magic":      str(query_params.get("magic", "0")),
                 "Simbolo":    str(query_params.get("symbol", "")),
@@ -102,7 +120,10 @@ if "action" in query_params and query_params["action"] == "webhook_mt5":
                 "Swap":       float(query_params.get("swap", 0)),
                 "SL":         float(query_params.get("sl", 0)),
                 "TP":         float(query_params.get("tp", 0)),
+                "Account":    acc_name,
             }
+            st.session_state['posiciones_abiertas'][ticket] = pos_data
+            cuenta["posiciones"][ticket] = pos_data
 
         elif tipo == "CLOSE":
             ticket = str(query_params.get("ticket", "0"))
@@ -121,16 +142,19 @@ if "action" in query_params and query_params["action"] == "webhook_mt5":
                 "Swap":        float(query_params.get("swap", 0)),
                 "ProfitNeto":  profit_neto,
                 "Equity":      float(query_params.get("equity", 0)),
-                "Balance":     float(query_params.get("equity", 0)),  # approx
+                "Balance":     float(query_params.get("equity", 0)),
+                "Account":     acc_name,
+                "AccType":     acc_type,
             }
-            # Evitar duplicados por ticket
             registros = st.session_state['registro_operaciones_en_vivo']
             tickets_existentes = [r.get("Ticket","") for r in registros]
             if ticket not in tickets_existentes:
                 nuevo_trade["Ticket"] = ticket
                 registros.append(nuevo_trade)
-            # Remover de posiciones abiertas si estaba
+                cuenta["trades"].append(nuevo_trade)
             st.session_state['posiciones_abiertas'].pop(ticket, None)
+            cuenta["posiciones"].pop(ticket, None)
+            cuenta["tipo"] = acc_type
 
         else:
             # Compatibilidad con envíos legacy
@@ -296,7 +320,7 @@ def color_sharpe(s):
 # LAYOUT PRINCIPAL
 # ─────────────────────────────────────────────
 st.title("🦁 Centro de Control de Portfolio — Darwinex Zero")
-tab1, tab2, tab3 = st.tabs(["📉 Comparador de Degradación (QA vs Real)", "⚡ Monitor de EAs en Tiempo Real", "📊 Análisis Histórico por EA"])
+tab1, tab2, tab3, tab4 = st.tabs(["📉 Comparador de Degradación (QA vs Real)", "⚡ Monitor de EAs en Tiempo Real", "📊 Análisis Histórico por EA", "🌐 Multi-Cuenta"])
 
 # ══════════════════════════════════════════════
 # TAB 1 — ANÁLISIS ESTÁTICO
@@ -850,3 +874,140 @@ with tab3:
         3. Click derecho → **Save as Detailed Report** → guardá como HTML
         4. Subí ese archivo aquí
         """)
+
+# ══════════════════════════════════════════════
+# TAB 4 — MULTI-CUENTA
+# ══════════════════════════════════════════════
+with tab4:
+    st.subheader("🌐 Dashboard Multi-Cuenta — Todas las Instancias MT5")
+
+    TIPOS_COLOR = {
+        "DARWINEX_ZERO": "#00d4ff",
+        "PROP_FIRM":     "#f39c12",
+        "REAL":          "#2ecc71",
+        "DEMO":          "#888888",
+        "DESCONOCIDO":   "#aaaaaa",
+    }
+
+    cuentas = st.session_state.get('cuentas', {})
+
+    if not cuentas:
+        st.info("⏳ Sin datos multi-cuenta. Cada EA debe tener `ACCOUNT_NAME` único configurado en sus inputs.")
+        st.markdown("""
+        **Configuración en cada instancia MT5:**
+        - `ACCOUNT_NAME = "DarwinexZero_1"` → cuenta Darwinex Zero principal
+        - `ACCOUNT_NAME = "FTMO_Challenge"` → prop firm challenge
+        - `ACCOUNT_NAME = "Real_ICMarkets"` → cuenta real propia
+        - `ACCOUNT_TYPE = "DARWINEX_ZERO"` / `"PROP_FIRM"` / `"REAL"` / `"DEMO"`
+
+        Todas envían a la **misma URL** — la app las separa automáticamente.
+        """)
+    else:
+        # ── Resumen de todas las cuentas ─────────────
+        st.markdown(f"**{len(cuentas)} cuenta(s) activa(s)**")
+
+        cols_cuentas = st.columns(min(len(cuentas), 4))
+        for idx, (nombre, data) in enumerate(cuentas.items()):
+            tipo  = data.get("tipo", "DESCONOCIDO")
+            color = TIPOS_COLOR.get(tipo, "#aaaaaa")
+            snaps = data.get("snapshots", [])
+            trades = data.get("trades", [])
+
+            equity_act  = snaps[-1]["Equity"]   if snaps else 0
+            balance_act = snaps[-1]["Balance"]  if snaps else 0
+            dd_act      = snaps[-1]["DD_Equity"] if snaps else 0
+            net_profit  = sum(t["ProfitNeto"] for t in trades)
+
+            with cols_cuentas[idx % 4]:
+                st.markdown(f"""
+                <div style="border:1px solid {color}; border-radius:8px; padding:12px; margin:4px 0;">
+                    <div style="color:{color}; font-weight:700; font-size:14px;">
+                        {nombre}
+                    </div>
+                    <div style="color:#aaa; font-size:11px; margin-bottom:8px;">{tipo}</div>
+                    <div style="font-size:18px; font-weight:700;">${equity_act:,.2f}</div>
+                    <div style="font-size:12px; color:#aaa;">Balance: ${balance_act:,.2f}</div>
+                    <div style="font-size:12px; color:{'#e74c3c' if dd_act>3 else '#2ecc71'};">
+                        DD: {dd_act:.2f}%
+                    </div>
+                    <div style="font-size:12px;">Net P&L trades: ${net_profit:,.2f}</div>
+                    <div style="font-size:11px; color:#888;">{len(trades)} trades | {len(snaps)} snapshots</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        st.write("---")
+
+        # ── Equity de todas las cuentas en un gráfico ─
+        st.subheader("📈 Equity Comparada — Todas las Cuentas")
+        fig_multi = go.Figure()
+        for nombre, data in cuentas.items():
+            snaps = data.get("snapshots", [])
+            if not snaps: continue
+            tipo  = data.get("tipo", "DESCONOCIDO")
+            color = TIPOS_COLOR.get(tipo, "#aaaaaa")
+            df_s  = pd.DataFrame(snaps)
+            df_s['Fecha'] = pd.to_datetime(df_s['Fecha'])
+            fig_multi.add_trace(go.Scatter(
+                x=df_s['Fecha'], y=df_s['Equity'],
+                name=f"{nombre} ({tipo})",
+                line=dict(color=color, width=2),
+                mode='lines'
+            ))
+        fig_multi.update_layout(
+            template="plotly_dark", height=380,
+            xaxis_title="Tiempo", yaxis_title="Equity ($)",
+            margin=dict(t=20, b=20), legend=dict(orientation="h", y=-0.2)
+        )
+        st.plotly_chart(fig_multi, use_container_width=True)
+
+        # ── DD comparado ─────────────────────────────
+        st.subheader("📉 Drawdown Comparado")
+        fig_dd = go.Figure()
+        for nombre, data in cuentas.items():
+            snaps = data.get("snapshots", [])
+            if not snaps: continue
+            tipo  = data.get("tipo", "DESCONOCIDO")
+            color = TIPOS_COLOR.get(tipo, "#aaaaaa")
+            df_s  = pd.DataFrame(snaps)
+            df_s['Fecha'] = pd.to_datetime(df_s['Fecha'])
+            fig_dd.add_trace(go.Scatter(
+                x=df_s['Fecha'], y=df_s['DD_Equity'],
+                name=nombre, line=dict(color=color, width=1.5),
+                fill='tozeroy', fillcolor=color.replace('#','rgba(').replace(')',',0.05)') if '#' in color else 'rgba(128,128,128,0.05)'
+            ))
+        fig_dd.add_hline(y=3.0, line_dash="dash", line_color="orange", annotation_text="3% alerta")
+        fig_dd.add_hline(y=5.0, line_dash="dash", line_color="red",    annotation_text="5% límite")
+        fig_dd.update_layout(template="plotly_dark", height=300,
+                             yaxis_title="DD%", margin=dict(t=20,b=20))
+        st.plotly_chart(fig_dd, use_container_width=True)
+
+        # ── Tabla resumen ─────────────────────────────
+        st.write("---")
+        st.subheader("📋 Tabla Resumen")
+        resumen_rows = []
+        for nombre, data in cuentas.items():
+            snaps  = data.get("snapshots", [])
+            trades = data.get("trades", [])
+            posiciones = data.get("posiciones", {})
+            equity_act  = snaps[-1]["Equity"]    if snaps else 0
+            balance_act = snaps[-1]["Balance"]   if snaps else 0
+            dd_act      = snaps[-1]["DD_Equity"] if snaps else 0
+            net_p = sum(t["ProfitNeto"] for t in trades)
+            ganancias = [t["ProfitNeto"] for t in trades if t["ProfitNeto"] > 0]
+            perdidas  = [t["ProfitNeto"] for t in trades if t["ProfitNeto"] < 0]
+            pf_r = round(sum(ganancias)/abs(sum(perdidas)),2) if perdidas else (float('inf') if ganancias else 0)
+            wr_r = round(len(ganancias)/len(trades)*100,1) if trades else 0
+            resumen_rows.append({
+                "Cuenta":        nombre,
+                "Tipo":          data.get("tipo","?"),
+                "Equity":        f"${equity_act:,.2f}",
+                "Balance":       f"${balance_act:,.2f}",
+                "DD%":           f"{dd_act:.2f}%",
+                "Net P&L":       f"${net_p:,.2f}",
+                "PF":            f"{pf_r:.2f}" if pf_r != float('inf') else "∞",
+                "WR%":           f"{wr_r:.1f}%",
+                "Trades":        len(trades),
+                "Pos. Abiertas": len(posiciones),
+                "Estado DD":     "🔴" if dd_act>5 else "🟡" if dd_act>3 else "🟢",
+            })
+        st.dataframe(pd.DataFrame(resumen_rows), use_container_width=True, hide_index=True)
