@@ -5,7 +5,71 @@ from plotly.subplots import make_subplots
 import io
 import re
 import math
+import urllib.request
+import urllib.parse
+import json
 from datetime import datetime
+
+# ─────────────────────────────────────────────
+# SUPABASE — capa de persistencia
+# ─────────────────────────────────────────────
+SUPABASE_URL = "https://iikykbyrospnzrsqcjfp.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlpa3lrYnlyb3Nwbnpyc3FjamZwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA4NDU2MjgsImV4cCI6MjA5NjQyMTYyOH0.xDCw6xC-xo2Tm4B7H6au0lcyrtK6MIklJ35s1zhgMlE"
+
+HEADERS_SB = {
+    "apikey":        SUPABASE_KEY,
+    "Authorization": f"Bearer {SUPABASE_KEY}",
+    "Content-Type":  "application/json",
+    "Prefer":        "return=minimal"
+}
+
+def sb_insert(tabla: str, datos: dict) -> bool:
+    """Inserta un registro en Supabase via REST. Retorna True si OK."""
+    try:
+        url  = f"{SUPABASE_URL}/rest/v1/{tabla}"
+        body = json.dumps(datos).encode()
+        req  = urllib.request.Request(url, data=body, headers=HEADERS_SB, method="POST")
+        urllib.request.urlopen(req, timeout=4)
+        return True
+    except Exception:
+        return False
+
+def sb_upsert(tabla: str, datos: dict) -> bool:
+    """Upsert (insert o update) por primary key."""
+    try:
+        headers = {**HEADERS_SB, "Prefer": "resolution=merge-duplicates"}
+        url  = f"{SUPABASE_URL}/rest/v1/{tabla}"
+        body = json.dumps(datos).encode()
+        req  = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        urllib.request.urlopen(req, timeout=4)
+        return True
+    except Exception:
+        return False
+
+def sb_select(tabla: str, filtros: str = "", limite: int = 1000) -> list:
+    """Lee registros de Supabase. filtros ej: 'account=eq.DarwinexZero_1'"""
+    try:
+        params = f"?limit={limite}&order=ts.desc"
+        if filtros:
+            params += f"&{filtros}"
+        url = f"{SUPABASE_URL}/rest/v1/{tabla}{params}"
+        req = urllib.request.Request(url, headers={**HEADERS_SB, "Prefer": "return=representation"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.loads(r.read())
+    except Exception:
+        return []
+
+def sb_delete_old_snapshots(cuenta: str, keep: int = 2000):
+    """Borra snapshots viejos para no llenar la DB gratuita."""
+    try:
+        url = (f"{SUPABASE_URL}/rest/v1/snapshots"
+               f"?account=eq.{urllib.parse.quote(cuenta)}"
+               f"&id=lt.(select id from snapshots where account=eq.{urllib.parse.quote(cuenta)}"
+               f" order by ts desc limit 1 offset {keep})")
+        req = urllib.request.Request(url, headers=HEADERS_SB, method="DELETE")
+        urllib.request.urlopen(req, timeout=4)
+    except Exception:
+        pass
 
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN
@@ -67,6 +131,83 @@ if 'telegram_config' not in st.session_state:
     st.session_state['telegram_config'] = {"token": "", "chat_id": "", "activo": False}
 if 'alertas_enviadas' not in st.session_state:
     st.session_state['alertas_enviadas'] = set()
+if 'sb_cargado' not in st.session_state:
+    st.session_state['sb_cargado'] = False
+
+# ── Recuperar datos de Supabase al arrancar ──────────────────────
+if not st.session_state['sb_cargado']:
+    try:
+        # Trades cerrados → reconstruir registro_operaciones_en_vivo y cuentas
+        trades_db = sb_select("trades", limite=5000)
+        for t in trades_db:
+            reg = {
+                "Fecha":      t.get("ts",""),
+                "Magic":      str(t.get("magic","0")),
+                "Simbolo":    t.get("symbol",""),
+                "Tipo":       "CLOSE",
+                "Direccion":  t.get("direction",""),
+                "Lots":       t.get("lots",0),
+                "Precio":     t.get("precio",0),
+                "Beneficio":  t.get("profit",0),
+                "Commission": t.get("commission",0),
+                "Swap":       t.get("swap",0),
+                "ProfitNeto": t.get("profit_neto",0),
+                "Equity":     t.get("equity",0),
+                "Balance":    t.get("equity",0),
+                "Account":    t.get("account","default"),
+                "AccType":    t.get("acc_type",""),
+                "Ticket":     str(t.get("ticket","")),
+            }
+            acc = reg["Account"]
+            if acc not in st.session_state['cuentas']:
+                st.session_state['cuentas'][acc] = {"tipo": reg["AccType"], "snapshots":[], "trades":[], "posiciones":{}}
+            tickets_ex = [r.get("Ticket","") for r in st.session_state['registro_operaciones_en_vivo']]
+            if reg["Ticket"] not in tickets_ex:
+                st.session_state['registro_operaciones_en_vivo'].append(reg)
+                st.session_state['cuentas'][acc]["trades"].append(reg)
+
+        # Snapshots recientes → últimos 500 por cuenta
+        snaps_db = sb_select("snapshots", limite=500)
+        for s in snaps_db:
+            acc = s.get("account","default")
+            snap = {
+                "Fecha":      s.get("ts",""),
+                "Equity":     s.get("equity",0),
+                "Balance":    s.get("balance",0),
+                "Margin":     s.get("margin",0),
+                "FreeMargin": s.get("free_margin",0),
+                "ProfitFlot": s.get("profit_flot",0),
+                "DD_Equity":  s.get("dd_equity",0),
+                "DD_Balance": s.get("dd_balance",0),
+            }
+            if acc not in st.session_state['cuentas']:
+                st.session_state['cuentas'][acc] = {"tipo": s.get("acc_type",""), "snapshots":[], "trades":[], "posiciones":{}}
+            st.session_state['cuentas'][acc]["snapshots"].append(snap)
+            st.session_state['snapshots'].append(snap)
+
+        # Posiciones abiertas
+        pos_db = sb_select("posiciones", limite=200)
+        for p in pos_db:
+            ticket = str(p.get("ticket",""))
+            pos = {
+                "Fecha":     p.get("ts",""),
+                "Magic":     str(p.get("magic","0")),
+                "Simbolo":   p.get("symbol",""),
+                "Direccion": p.get("direction",""),
+                "Lots":      p.get("lots",0),
+                "PriceOpen": p.get("price_open",0),
+                "PriceCur":  p.get("price_cur",0),
+                "Profit":    p.get("profit",0),
+                "Swap":      p.get("swap",0),
+                "SL":        p.get("sl",0),
+                "TP":        p.get("tp",0),
+                "Account":   p.get("account",""),
+            }
+            st.session_state['posiciones_abiertas'][ticket] = pos
+
+        st.session_state['sb_cargado'] = True
+    except Exception:
+        pass  # Si Supabase falla, la app sigue funcionando con session_state
 
 # ─────────────────────────────────────────────
 # WEBHOOK RECEPTOR
@@ -112,6 +253,18 @@ if "action" in query_params and query_params["action"] == "webhook_mt5":
             st.session_state['registro_operaciones_en_vivo'].append(reg)
             if not cuenta["snapshots"] or cuenta["snapshots"][-1]["Equity"] != snap["Equity"]:
                 cuenta["snapshots"].append(snap)
+                # ── Persistir snapshot en Supabase ──
+                sb_insert("snapshots", {
+                    "account":     acc_name,
+                    "acc_type":    acc_type,
+                    "equity":      snap["Equity"],
+                    "balance":     snap["Balance"],
+                    "margin":      snap["Margin"],
+                    "free_margin": snap["FreeMargin"],
+                    "profit_flot": snap["ProfitFlot"],
+                    "dd_equity":   snap["DD_Equity"],
+                    "dd_balance":  snap["DD_Balance"],
+                })
             verificar_alertas_dd(cuenta["snapshots"], acc_name)
 
         elif tipo == "POSITION_OPEN":
@@ -132,6 +285,22 @@ if "action" in query_params and query_params["action"] == "webhook_mt5":
             }
             st.session_state['posiciones_abiertas'][ticket] = pos_data
             cuenta["posiciones"][ticket] = pos_data
+            # ── Persistir posición en Supabase ──
+            sb_upsert("posiciones", {
+                "ticket":     ticket,
+                "account":    acc_name,
+                "magic":      pos_data["Magic"],
+                "symbol":     pos_data["Simbolo"],
+                "direction":  pos_data["Direccion"],
+                "lots":       pos_data["Lots"],
+                "price_open": pos_data["PriceOpen"],
+                "price_cur":  pos_data["PriceCur"],
+                "profit":     pos_data["Profit"],
+                "swap":       pos_data["Swap"],
+                "sl":         pos_data["SL"],
+                "tp":         pos_data["TP"],
+                "equity":     float(query_params.get("equity", 0)),
+            })
 
         elif tipo == "CLOSE":
             ticket = str(query_params.get("ticket", "0"))
@@ -160,6 +329,30 @@ if "action" in query_params and query_params["action"] == "webhook_mt5":
                 nuevo_trade["Ticket"] = ticket
                 registros.append(nuevo_trade)
                 cuenta["trades"].append(nuevo_trade)
+                # ── Persistir en Supabase ──
+                sb_upsert("trades", {
+                    "ticket":      ticket,
+                    "account":     acc_name,
+                    "acc_type":    acc_type,
+                    "magic":       nuevo_trade["Magic"],
+                    "symbol":      nuevo_trade["Simbolo"],
+                    "direction":   nuevo_trade["Direccion"],
+                    "lots":        nuevo_trade["Lots"],
+                    "precio":      nuevo_trade["Precio"],
+                    "profit":      nuevo_trade["Beneficio"],
+                    "commission":  nuevo_trade["Commission"],
+                    "swap":        nuevo_trade["Swap"],
+                    "profit_neto": profit_neto,
+                    "equity":      nuevo_trade["Equity"],
+                    "close_time":  int(query_params.get("close_time", 0)),
+                })
+            # Borrar de posiciones en Supabase
+            try:
+                url_del = f"{SUPABASE_URL}/rest/v1/posiciones?ticket=eq.{ticket}"
+                req_del = urllib.request.Request(url_del, headers=HEADERS_SB, method="DELETE")
+                urllib.request.urlopen(req_del, timeout=3)
+            except Exception:
+                pass
             st.session_state['posiciones_abiertas'].pop(ticket, None)
             cuenta["posiciones"].pop(ticket, None)
             cuenta["tipo"] = acc_type
