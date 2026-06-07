@@ -527,193 +527,193 @@ with tab2:
     st.write("---")
 
     # ── Sin datos ────────────────────────────────
-    if not st.session_state['registro_operaciones_en_vivo']:
+    _registros = st.session_state['registro_operaciones_en_vivo']
+    if not _registros:
         st.info("⏳ Esperando datos desde MT5... El EA enviará métricas cada 10 segundos vía OnTimer().")
-        st.stop()
+    if _registros:
+        # ── DataFrame principal ──────────────────────
+        df_vivo = pd.DataFrame(_registros)
+        df_vivo['Fecha'] = pd.to_datetime(df_vivo['Fecha'])
 
-    # ── DataFrame principal ──────────────────────
-    df_vivo = pd.DataFrame(st.session_state['registro_operaciones_en_vivo'])
-    df_vivo['Fecha'] = pd.to_datetime(df_vivo['Fecha'])
+        # ── Selector Magic Number ────────────────────
+        magics_disponibles = sorted(df_vivo['Magic'].unique().tolist())
+        magic_labels = {m: f"EA {m}" for m in magics_disponibles}
+        magic_labels["TODOS"] = "📊 TODOS los EAs"
 
-    # ── Selector Magic Number ────────────────────
-    magics_disponibles = sorted(df_vivo['Magic'].unique().tolist())
-    magic_labels = {m: f"EA {m}" for m in magics_disponibles}
-    magic_labels["TODOS"] = "📊 TODOS los EAs"
+        col_sel1, col_sel2 = st.columns([1, 3])
+        with col_sel1:
+            filtro_magic = st.selectbox(
+                "Filtrar por EA (Magic Number)",
+                options=["TODOS"] + magics_disponibles,
+                format_func=lambda x: magic_labels.get(x, x)
+            )
 
-    col_sel1, col_sel2 = st.columns([1, 3])
-    with col_sel1:
-        filtro_magic = st.selectbox(
-            "Filtrar por EA (Magic Number)",
-            options=["TODOS"] + magics_disponibles,
-            format_func=lambda x: magic_labels.get(x, x)
+        # Aplicar filtro
+        if filtro_magic == "TODOS":
+            df_filtrado = df_vivo.copy()
+        else:
+            df_filtrado = df_vivo[df_vivo['Magic'] == filtro_magic].copy()
+
+        # ── Cálculos de riesgo ───────────────────────
+        fecha_hoy     = datetime.now().strftime("%Y-%m-%d")
+        df_hoy        = df_filtrado[df_filtrado['Fecha'].dt.strftime("%Y-%m-%d") == fecha_hoy]
+        if df_hoy.empty:
+            df_hoy = df_filtrado.tail(1)
+
+        equity_actual      = df_filtrado['Equity'].iloc[-1]
+        max_equity_dia     = df_hoy['Equity'].max()
+        min_equity_dia     = df_hoy['Equity'].min()
+        pico_historico     = df_filtrado['Equity'].cummax().iloc[-1]
+        capital_inicial    = st.session_state['capital_inicial']
+
+        dd_usd = pico_historico - equity_actual
+        dd_pct = (dd_usd / pico_historico * 100) if pico_historico > 0 else 0.0
+        retorno_total_pct = (equity_actual - capital_inicial) / capital_inicial * 100
+
+        # ── ALERTA DRAWDOWN ──────────────────────────
+        if dd_pct > 5.0:
+            st.markdown(f'<div class="alert-dd">⛔ ALERTA CRÍTICA: DD en vivo {dd_pct:.2f}% — Supera límite Darwinex Zero (5%)</div>', unsafe_allow_html=True)
+        elif dd_pct > 3.0:
+            st.markdown(f'<div class="alert-dd">⚠️ ALERTA DD: {dd_pct:.2f}% desde pico de sesión — Zona de vigilancia</div>', unsafe_allow_html=True)
+        else:
+            st.markdown(f'<div class="alert-ok">✅ Drawdown controlado: {dd_pct:.2f}% — Portfolio operando dentro de parámetros</div>', unsafe_allow_html=True)
+
+        st.write("")
+
+        # ── KPIs DE RIESGO ───────────────────────────
+        k1, k2, k3, k4, k5 = st.columns(5)
+        k1.metric("Equity Actual",       f"${equity_actual:,.2f}",  delta=f"{retorno_total_pct:+.2f}%")
+        k2.metric("DD Vivo (desde pico)", f"{dd_pct:.2f}%",          delta=f"-${dd_usd:,.2f}", delta_color="inverse")
+        k3.metric("High del Día",         f"${max_equity_dia:,.2f}")
+        k4.metric("Low del Día",          f"${min_equity_dia:,.2f}")
+        k5.metric("Pico Histórico",       f"${pico_historico:,.2f}")
+
+        st.write("---")
+
+        # ── MÉTRICAS DE CALIDAD DEL PORTFOLIO ────────
+        st.subheader("📐 Métricas de Calidad — " + ("Portfolio Completo" if filtro_magic == "TODOS" else f"EA {filtro_magic}"))
+
+        # Solo trades cerrados (Beneficio != 0)
+        df_trades = df_filtrado[df_filtrado['Beneficio'] != 0].copy()
+        metricas  = calcular_metricas_portfolio(df_trades)
+
+        if metricas:
+            m1, m2, m3, m4 = st.columns(4)
+            pf_val = metricas['profit_factor']
+            pf_str = f"{pf_val:.2f}" if pf_val != float('inf') else "∞"
+            m1.metric(f"{color_pf(pf_val)} Profit Factor",    pf_str,
+                      help="≥1.5 excelente | ≥1.2 aceptable | <1.2 bajo")
+            m2.metric(f"{color_sharpe(metricas['sharpe'])} Sharpe Ratio", f"{metricas['sharpe']:.2f}",
+                      help="≥1.0 institucional | ≥0.5 aceptable")
+            m3.metric("🎯 Win Rate",        f"{metricas['win_rate']:.1f}%")
+            m4.metric("💰 Net Profit",      f"${metricas['net_profit']:,.2f}")
+
+            m5, m6, m7, m8 = st.columns(4)
+            m5.metric("📈 Avg Win",         f"${metricas['avg_win']:,.2f}")
+            m6.metric("📉 Avg Loss",        f"${metricas['avg_loss']:,.2f}")
+            m7.metric("⚡ Expectancy/Trade", f"${metricas['expectancy']:,.2f}",
+                      help="Ganancia esperada por operación")
+            m8.metric("🔄 Recovery Factor", f"{metricas['recovery_factor']:.2f}",
+                      help="Profit / MaxDD — >3 es institucional")
+
+            # KPI extra
+            m9, m10, _, _ = st.columns(4)
+            m9.metric("📊 Max DD (serie)",  f"{metricas['max_dd_pct']:.2f}%")
+            m10.metric("🔢 Total Trades",   str(metricas['total_trades']))
+        else:
+            st.info("Sin trades cerrados para calcular métricas. Los envíos de tipo CLOSE aparecerán aquí.")
+
+        st.write("---")
+
+        # ── GRÁFICO EQUITY + DRAWDOWN ─────────────────
+        st.subheader("📈 Curva de Equity en Vivo")
+
+        fig = make_subplots(
+            rows=2, cols=1,
+            shared_xaxes=True,
+            row_heights=[0.7, 0.3],
+            vertical_spacing=0.05,
+            subplot_titles=("Equity", "Drawdown %")
         )
 
-    # Aplicar filtro
-    if filtro_magic == "TODOS":
-        df_filtrado = df_vivo.copy()
-    else:
-        df_filtrado = df_vivo[df_vivo['Magic'] == filtro_magic].copy()
+        # Equity line
+        fig.add_trace(go.Scatter(
+            x=df_filtrado['Fecha'],
+            y=df_filtrado['Equity'],
+            name="Equity",
+            line=dict(color='#00d4ff', width=2),
+            fill='tozeroy',
+            fillcolor='rgba(0, 212, 255, 0.08)'
+        ), row=1, col=1)
 
-    # ── Cálculos de riesgo ───────────────────────
-    fecha_hoy     = datetime.now().strftime("%Y-%m-%d")
-    df_hoy        = df_filtrado[df_filtrado['Fecha'].dt.strftime("%Y-%m-%d") == fecha_hoy]
-    if df_hoy.empty:
-        df_hoy = df_filtrado.tail(1)
+        # Capital inicial reference
+        fig.add_hline(y=capital_inicial, line_dash="dot", line_color="#888888",
+                      annotation_text=f"Capital inicial ${capital_inicial:,.0f}", row=1, col=1)
 
-    equity_actual      = df_filtrado['Equity'].iloc[-1]
-    max_equity_dia     = df_hoy['Equity'].max()
-    min_equity_dia     = df_hoy['Equity'].min()
-    pico_historico     = df_filtrado['Equity'].cummax().iloc[-1]
-    capital_inicial    = st.session_state['capital_inicial']
+        # Drawdown subplot
+        dd_serie = (df_filtrado['Equity'] - df_filtrado['Equity'].cummax()) / df_filtrado['Equity'].cummax() * 100
+        fig.add_trace(go.Scatter(
+            x=df_filtrado['Fecha'],
+            y=dd_serie,
+            name="DD%",
+            line=dict(color='#ff4444', width=1.5),
+            fill='tozeroy',
+            fillcolor='rgba(255, 68, 68, 0.15)'
+        ), row=2, col=1)
 
-    dd_usd = pico_historico - equity_actual
-    dd_pct = (dd_usd / pico_historico * 100) if pico_historico > 0 else 0.0
-    retorno_total_pct = (equity_actual - capital_inicial) / capital_inicial * 100
+        # Líneas de alerta DD
+        fig.add_hline(y=-3.0, line_dash="dash", line_color="orange", row=2, col=1,
+                      annotation_text="-3%")
+        fig.add_hline(y=-5.0, line_dash="dash", line_color="red", row=2, col=1,
+                      annotation_text="-5% Límite DZ")
 
-    # ── ALERTA DRAWDOWN ──────────────────────────
-    if dd_pct > 5.0:
-        st.markdown(f'<div class="alert-dd">⛔ ALERTA CRÍTICA: DD en vivo {dd_pct:.2f}% — Supera límite Darwinex Zero (5%)</div>', unsafe_allow_html=True)
-    elif dd_pct > 3.0:
-        st.markdown(f'<div class="alert-dd">⚠️ ALERTA DD: {dd_pct:.2f}% desde pico de sesión — Zona de vigilancia</div>', unsafe_allow_html=True)
-    else:
-        st.markdown(f'<div class="alert-ok">✅ Drawdown controlado: {dd_pct:.2f}% — Portfolio operando dentro de parámetros</div>', unsafe_allow_html=True)
+        fig.update_layout(
+            template="plotly_dark",
+            height=520,
+            showlegend=True,
+            margin=dict(t=30, b=20),
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)'
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
-    st.write("")
+        # ── DESGLOSE POR EA ──────────────────────────
+        if filtro_magic == "TODOS" and len(magics_disponibles) > 1:
+            st.write("---")
+            st.subheader("🔬 Desglose por EA (Magic Number)")
 
-    # ── KPIs DE RIESGO ───────────────────────────
-    k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("Equity Actual",       f"${equity_actual:,.2f}",  delta=f"{retorno_total_pct:+.2f}%")
-    k2.metric("DD Vivo (desde pico)", f"{dd_pct:.2f}%",          delta=f"-${dd_usd:,.2f}", delta_color="inverse")
-    k3.metric("High del Día",         f"${max_equity_dia:,.2f}")
-    k4.metric("Low del Día",          f"${min_equity_dia:,.2f}")
-    k5.metric("Pico Histórico",       f"${pico_historico:,.2f}")
+            cols_ea = st.columns(min(len(magics_disponibles), 5))
+            for idx, magic in enumerate(magics_disponibles):
+                df_ea     = df_vivo[df_vivo['Magic'] == magic]
+                df_trades_ea = df_ea[df_ea['Beneficio'] != 0]
+                met_ea    = calcular_metricas_portfolio(df_trades_ea)
+                with cols_ea[idx % 5]:
+                    pf_ea = met_ea.get('profit_factor', 0)
+                    pf_str_ea = f"{pf_ea:.2f}" if pf_ea != float('inf') else "∞"
+                    st.markdown(f"**EA {magic}**")
+                    st.metric("PF",     pf_str_ea)
+                    st.metric("Sharpe", f"{met_ea.get('sharpe', 0):.2f}")
+                    st.metric("WR",     f"{met_ea.get('win_rate', 0):.0f}%")
+                    st.metric("Trades", str(met_ea.get('total_trades', 0)))
 
-    st.write("---")
+        # ── POSICIONES ABIERTAS ──────────────────────
+        posiciones = st.session_state.get('posiciones_abiertas', {})
+        if posiciones:
+            st.write("---")
+            st.subheader("🔴 Posiciones Abiertas en este Momento")
+            df_pos = pd.DataFrame(list(posiciones.values()))
+            if filtro_magic != "TODOS":
+                df_pos = df_pos[df_pos['Magic'] == filtro_magic]
+            if not df_pos.empty:
+                cols_mostrar = ['Magic','Simbolo','Direccion','Lots','PriceOpen','PriceCur','Profit','Swap','SL','TP']
+                cols_mostrar = [c for c in cols_mostrar if c in df_pos.columns]
+                st.dataframe(df_pos[cols_mostrar], use_container_width=True)
+                st.metric("💰 P&L Flotante Total", f"${df_pos['Profit'].sum():,.2f}")
 
-    # ── MÉTRICAS DE CALIDAD DEL PORTFOLIO ────────
-    st.subheader("📐 Métricas de Calidad — " + ("Portfolio Completo" if filtro_magic == "TODOS" else f"EA {filtro_magic}"))
-
-    # Solo trades cerrados (Beneficio != 0)
-    df_trades = df_filtrado[df_filtrado['Beneficio'] != 0].copy()
-    metricas  = calcular_metricas_portfolio(df_trades)
-
-    if metricas:
-        m1, m2, m3, m4 = st.columns(4)
-        pf_val = metricas['profit_factor']
-        pf_str = f"{pf_val:.2f}" if pf_val != float('inf') else "∞"
-        m1.metric(f"{color_pf(pf_val)} Profit Factor",    pf_str,
-                  help="≥1.5 excelente | ≥1.2 aceptable | <1.2 bajo")
-        m2.metric(f"{color_sharpe(metricas['sharpe'])} Sharpe Ratio", f"{metricas['sharpe']:.2f}",
-                  help="≥1.0 institucional | ≥0.5 aceptable")
-        m3.metric("🎯 Win Rate",        f"{metricas['win_rate']:.1f}%")
-        m4.metric("💰 Net Profit",      f"${metricas['net_profit']:,.2f}")
-
-        m5, m6, m7, m8 = st.columns(4)
-        m5.metric("📈 Avg Win",         f"${metricas['avg_win']:,.2f}")
-        m6.metric("📉 Avg Loss",        f"${metricas['avg_loss']:,.2f}")
-        m7.metric("⚡ Expectancy/Trade", f"${metricas['expectancy']:,.2f}",
-                  help="Ganancia esperada por operación")
-        m8.metric("🔄 Recovery Factor", f"{metricas['recovery_factor']:.2f}",
-                  help="Profit / MaxDD — >3 es institucional")
-
-        # KPI extra
-        m9, m10, _, _ = st.columns(4)
-        m9.metric("📊 Max DD (serie)",  f"{metricas['max_dd_pct']:.2f}%")
-        m10.metric("🔢 Total Trades",   str(metricas['total_trades']))
-    else:
-        st.info("Sin trades cerrados para calcular métricas. Los envíos de tipo CLOSE aparecerán aquí.")
-
-    st.write("---")
-
-    # ── GRÁFICO EQUITY + DRAWDOWN ─────────────────
-    st.subheader("📈 Curva de Equity en Vivo")
-
-    fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
-        row_heights=[0.7, 0.3],
-        vertical_spacing=0.05,
-        subplot_titles=("Equity", "Drawdown %")
-    )
-
-    # Equity line
-    fig.add_trace(go.Scatter(
-        x=df_filtrado['Fecha'],
-        y=df_filtrado['Equity'],
-        name="Equity",
-        line=dict(color='#00d4ff', width=2),
-        fill='tozeroy',
-        fillcolor='rgba(0, 212, 255, 0.08)'
-    ), row=1, col=1)
-
-    # Capital inicial reference
-    fig.add_hline(y=capital_inicial, line_dash="dot", line_color="#888888",
-                  annotation_text=f"Capital inicial ${capital_inicial:,.0f}", row=1, col=1)
-
-    # Drawdown subplot
-    dd_serie = (df_filtrado['Equity'] - df_filtrado['Equity'].cummax()) / df_filtrado['Equity'].cummax() * 100
-    fig.add_trace(go.Scatter(
-        x=df_filtrado['Fecha'],
-        y=dd_serie,
-        name="DD%",
-        line=dict(color='#ff4444', width=1.5),
-        fill='tozeroy',
-        fillcolor='rgba(255, 68, 68, 0.15)'
-    ), row=2, col=1)
-
-    # Líneas de alerta DD
-    fig.add_hline(y=-3.0, line_dash="dash", line_color="orange", row=2, col=1,
-                  annotation_text="-3%")
-    fig.add_hline(y=-5.0, line_dash="dash", line_color="red", row=2, col=1,
-                  annotation_text="-5% Límite DZ")
-
-    fig.update_layout(
-        template="plotly_dark",
-        height=520,
-        showlegend=True,
-        margin=dict(t=30, b=20),
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)'
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    # ── DESGLOSE POR EA ──────────────────────────
-    if filtro_magic == "TODOS" and len(magics_disponibles) > 1:
-        st.write("---")
-        st.subheader("🔬 Desglose por EA (Magic Number)")
-
-        cols_ea = st.columns(min(len(magics_disponibles), 5))
-        for idx, magic in enumerate(magics_disponibles):
-            df_ea     = df_vivo[df_vivo['Magic'] == magic]
-            df_trades_ea = df_ea[df_ea['Beneficio'] != 0]
-            met_ea    = calcular_metricas_portfolio(df_trades_ea)
-            with cols_ea[idx % 5]:
-                pf_ea = met_ea.get('profit_factor', 0)
-                pf_str_ea = f"{pf_ea:.2f}" if pf_ea != float('inf') else "∞"
-                st.markdown(f"**EA {magic}**")
-                st.metric("PF",     pf_str_ea)
-                st.metric("Sharpe", f"{met_ea.get('sharpe', 0):.2f}")
-                st.metric("WR",     f"{met_ea.get('win_rate', 0):.0f}%")
-                st.metric("Trades", str(met_ea.get('total_trades', 0)))
-
-    # ── POSICIONES ABIERTAS ──────────────────────
-    posiciones = st.session_state.get('posiciones_abiertas', {})
-    if posiciones:
-        st.write("---")
-        st.subheader("🔴 Posiciones Abiertas en este Momento")
-        df_pos = pd.DataFrame(list(posiciones.values()))
-        if filtro_magic != "TODOS":
-            df_pos = df_pos[df_pos['Magic'] == filtro_magic]
-        if not df_pos.empty:
-            cols_mostrar = ['Magic','Simbolo','Direccion','Lots','PriceOpen','PriceCur','Profit','Swap','SL','TP']
-            cols_mostrar = [c for c in cols_mostrar if c in df_pos.columns]
-            st.dataframe(df_pos[cols_mostrar], use_container_width=True)
-            st.metric("💰 P&L Flotante Total", f"${df_pos['Profit'].sum():,.2f}")
-
-    # ── TABLA DE OPERACIONES ─────────────────────
-    with st.expander("📋 Ver historial de operaciones cerradas"):
-        df_closed = df_filtrado[df_filtrado['Tipo']=='CLOSE'] if 'Tipo' in df_filtrado.columns else df_filtrado
-        st.dataframe(df_closed.sort_values('Fecha', ascending=False).reset_index(drop=True), use_container_width=True)
+        # ── TABLA DE OPERACIONES ─────────────────────
+        with st.expander("📋 Ver historial de operaciones cerradas"):
+            df_closed = df_filtrado[df_filtrado['Tipo']=='CLOSE'] if 'Tipo' in df_filtrado.columns else df_filtrado
+            st.dataframe(df_closed.sort_values('Fecha', ascending=False).reset_index(drop=True), use_container_width=True)
 
 # ══════════════════════════════════════════════
 # TAB 3 — ANÁLISIS HISTÓRICO POR EA
@@ -765,7 +765,6 @@ with tab3:
             if col_fecha is None or col_profit is None:
                 st.error("❌ No se encontraron columnas de Fecha y/o Profit. Verificá el formato del archivo.")
                 st.dataframe(df_hist.head(5))
-                st.stop()
 
             # Limpieza
             df_hist['_fecha'] = pd.to_datetime(df_hist[col_fecha], errors='coerce')
@@ -807,7 +806,6 @@ with tab3:
 
             if df_trades_hist.empty:
                 st.warning("No se encontraron trades con profit ≠ 0 en el archivo.")
-                st.stop()
 
             magics_hist = sorted(df_trades_hist['_magic'].unique().tolist())
             periodos_hist = sorted(df_trades_hist['_periodo'].unique().tolist())
@@ -1183,7 +1181,6 @@ with tab5:
 
         if not benchmarks:
             st.info("Sin benchmarks. Subí el HTML de SQX para cada EA arriba.")
-            st.stop()
 
         st.write("---")
 
