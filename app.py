@@ -923,7 +923,7 @@ with tab2:
 # ══════════════════════════════════════════════
 with tab3:
     st.subheader("📊 Análisis Histórico por EA — Reporte MT5")
-    st.caption("Subí el reporte de historial de MT5 (HTML o CSV). Se desglosa automáticamente por Magic Number.")
+    st.caption("Exportá desde MT5 → History → click derecho → **Save as Detailed Report** (xlsx o html). La app detecta el nombre del EA desde el campo Comment.")
 
     archivo_hist = st.file_uploader(
         "Subir historial completo de MT5 (Statement / Account History)",
@@ -932,86 +932,90 @@ with tab3:
 
     if archivo_hist:
         try:
-            df_hist = leer_archivo_inteligente(archivo_hist)
+            contenido = archivo_hist.read()
+            archivo_hist.seek(0)
 
-            # Detectar columnas clave
-            cols_lower = {str(c).lower().strip(): c for c in df_hist.columns}
+            # ── Detectar formato MT5 Positions (xlsx con header en fila 6) ──
+            df_hist = None
+            es_formato_mt5_positions = False
 
-            # Fecha
-            col_fecha = None
-            for k in ['close time','time','fecha','date','open time','close_time']:
-                if k in cols_lower:
-                    col_fecha = cols_lower[k]; break
+            if archivo_hist.name.endswith(('.xlsx','.xls')):
+                try:
+                    df_check = pd.read_excel(io.BytesIO(contenido), header=None, nrows=8)
+                    # Detectar si fila 6 tiene "Time","Position","Symbol"
+                    row6 = [str(v).strip() for v in df_check.iloc[6].tolist() if str(v) != 'nan']
+                    if 'Time' in row6 and 'Symbol' in row6 and ('Position' in row6 or 'Profit' in row6):
+                        es_formato_mt5_positions = True
+                        df_hist = pd.read_excel(io.BytesIO(contenido), header=6)
+                        # Renombrar columnas duplicadas
+                        cols = ['OpenTime','Ticket','Symbol','Type','Volume','OpenPrice',
+                                'SL','TP','CloseTime','ClosePrice','Commission','Swap','Profit','Comment']
+                        df_hist.columns = cols[:len(df_hist.columns)]
+                        # Filtrar filas de resumen (no-numéricas en Ticket)
+                        df_hist = df_hist[pd.to_numeric(df_hist['Ticket'], errors='coerce').notna()].copy()
+                        df_hist = df_hist[pd.to_numeric(df_hist['Profit'], errors='coerce').notna()].copy()
+                        df_hist['_fecha']  = pd.to_datetime(df_hist['CloseTime'], errors='coerce')
+                        df_hist['_profit'] = pd.to_numeric(df_hist['Profit'], errors='coerce').fillna(0)
+                        df_hist['_comm']   = pd.to_numeric(df_hist['Commission'], errors='coerce').fillna(0)
+                        df_hist['_swap']   = pd.to_numeric(df_hist['Swap'], errors='coerce').fillna(0)
+                        df_hist['_symbol'] = df_hist['Symbol'].astype(str)
+                        # EA Name desde Comment — limpiar prefijos de SQX
+                        def extraer_nombre_ea(comment):
+                            if pd.isna(comment) or str(comment).startswith('['):
+                                return "Manual/Desconocido"
+                            c = str(comment).strip()
+                            # Quitar sufijos numéricos tipo _1_95, _4.27.135
+                            c = re.sub(r'_\d+[\._]\d+.*$', '', c)
+                            return c.strip('_').strip()
+                        df_hist['_ea_name'] = df_hist['Comment'].apply(extraer_nombre_ea)
+                        # Magic no está en este formato — usar ea_name como agrupador
+                        df_hist['_magic'] = df_hist['_ea_name']
+                except Exception:
+                    pass
 
-            # Profit
-            col_profit = None
-            for k in ['profit','profit/loss','p/l in money','beneficio','ganancia','p/l']:
-                if k in cols_lower:
-                    col_profit = cols_lower[k]; break
+            # ── Fallback: parser universal ──
+            if df_hist is None:
+                df_hist = leer_archivo_inteligente(archivo_hist)
+                cols_lower = {str(c).lower().strip(): c for c in df_hist.columns}
+                col_fecha  = next((cols_lower[k] for k in ['close time','time','fecha','date','open time'] if k in cols_lower), None)
+                col_profit = next((cols_lower[k] for k in ['profit','profit/loss','p/l in money','beneficio'] if k in cols_lower), None)
+                col_comm   = cols_lower.get('commission', None)
+                col_swap   = cols_lower.get('swap', None)
+                col_magic  = cols_lower.get('magic', cols_lower.get('magic number', None))
+                col_symbol = next((cols_lower[k] for k in ['symbol','simbolo'] if k in cols_lower), None)
+                col_comment= next((cols_lower[k] for k in ['comment','comentario'] if k in cols_lower), None)
 
-            # Magic
-            col_magic = None
-            for k in ['magic','magic number','magic_number']:
-                if k in cols_lower:
-                    col_magic = cols_lower[k]; break
+                if col_fecha is None or col_profit is None:
+                    st.error("❌ No se encontraron columnas de Fecha y/o Profit.")
+                    st.dataframe(df_hist.head(5))
+                    st.stop()
 
-            # Symbol
-            col_symbol = None
-            for k in ['symbol','simbolo','instrumento','instrument']:
-                if k in cols_lower:
-                    col_symbol = cols_lower[k]; break
+                df_hist['_fecha']  = pd.to_datetime(df_hist[col_fecha], errors='coerce')
+                df_hist['_profit'] = pd.to_numeric(df_hist[col_profit].astype(str).str.replace(r'[^\d\.\-]','',regex=True), errors='coerce').fillna(0)
+                df_hist['_comm']   = pd.to_numeric(df_hist[col_comm], errors='coerce').fillna(0) if col_comm else 0
+                df_hist['_swap']   = pd.to_numeric(df_hist[col_swap], errors='coerce').fillna(0) if col_swap else 0
+                df_hist['_symbol'] = df_hist[col_symbol].astype(str) if col_symbol else "?"
+                if col_magic:
+                    df_hist['_magic'] = df_hist[col_magic].astype(str)
+                elif col_comment:
+                    df_hist['_magic'] = df_hist[col_comment].astype(str)
+                else:
+                    df_hist['_magic'] = df_hist['_symbol']
 
-            # Commission / Swap
-            col_comm = cols_lower.get('commission', cols_lower.get('comision', None))
-            col_swap = cols_lower.get('swap', None)
-
-            if col_fecha is None or col_profit is None:
-                st.error("❌ No se encontraron columnas de Fecha y/o Profit. Verificá el formato del archivo.")
-                st.dataframe(df_hist.head(5))
-
-            # Limpieza
-            df_hist['_fecha'] = pd.to_datetime(df_hist[col_fecha], errors='coerce')
             df_hist = df_hist.dropna(subset=['_fecha'])
+            df_hist['_profit_neto'] = df_hist['_profit'] + df_hist['_comm'] + df_hist['_swap']
             df_hist['_periodo'] = df_hist['_fecha'].dt.to_period('M').astype(str)
 
-            profit_col = df_hist[col_profit].astype(str).str.replace(r'[^\d\.\-]','',regex=True)
-            df_hist['_profit'] = pd.to_numeric(profit_col, errors='coerce').fillna(0)
+            # Filtrar profits anómalos (backtests mezclados)
+            p99 = df_hist['_profit'].abs().quantile(0.99)
+            df_hist_clean = df_hist[df_hist['_profit'].abs() <= p99 * 10].copy()
+            if len(df_hist_clean) < len(df_hist):
+                st.warning(f"⚠️ Se filtraron {len(df_hist)-len(df_hist_clean)} filas con profits anómalos (posibles backtests mezclados).")
+                df_hist = df_hist_clean
 
-            if col_comm:
-                df_hist['_comm'] = pd.to_numeric(
-                    df_hist[col_comm].astype(str).str.replace(r'[^\d\.\-]','',regex=True),
-                    errors='coerce').fillna(0)
-            else:
-                df_hist['_comm'] = 0
-
-            if col_swap:
-                df_hist['_swap'] = pd.to_numeric(
-                    df_hist[col_swap].astype(str).str.replace(r'[^\d\.\-]','',regex=True),
-                    errors='coerce').fillna(0)
-            else:
-                df_hist['_swap'] = 0
-
-            df_hist['_profit_neto'] = df_hist['_profit'] + df_hist['_comm'] + df_hist['_swap']
-
-            # Magic Number
-            if col_magic:
-                df_hist['_magic'] = df_hist[col_magic].astype(str).str.strip()
-            else:
-                # Si no hay columna magic, agrupar por symbol como fallback
-                if col_symbol:
-                    df_hist['_magic'] = df_hist[col_symbol].astype(str).str.strip()
-                    st.warning("⚠️ No se encontró columna Magic Number. Agrupando por Symbol.")
-                else:
-                    df_hist['_magic'] = "CUENTA"
-
-            # Filtrar solo trades (profit != 0)
             df_trades_hist = df_hist[df_hist['_profit'] != 0].copy()
-
-            if df_trades_hist.empty:
-                st.warning("No se encontraron trades con profit ≠ 0 en el archivo.")
-
-            magics_hist = sorted(df_trades_hist['_magic'].unique().tolist())
-            periodos_hist = sorted(df_trades_hist['_periodo'].unique().tolist())
+            magics_hist    = sorted(df_trades_hist['_magic'].unique().tolist())
+            periodos_hist  = sorted(df_trades_hist['_periodo'].unique().tolist())
 
             st.success(f"✅ {len(df_trades_hist)} trades | {len(magics_hist)} EAs detectados | {len(periodos_hist)} meses")
             st.write("---")
