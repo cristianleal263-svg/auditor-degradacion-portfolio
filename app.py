@@ -127,6 +127,16 @@ if 'cuentas' not in st.session_state:
 if 'sqx_benchmarks' not in st.session_state:
     # dict: "magic|account" → {pf, wr, expectancy, avg_win, avg_loss, trades, net_profit, nombre}
     st.session_state['sqx_benchmarks'] = {}
+if 'magic_nombres' not in st.session_state:
+    # dict: magic_str → nombre_ea (auto-construido desde comentarios MT5 + editable)
+    st.session_state['magic_nombres'] = {}
+if 'dz_config' not in st.session_state:
+    st.session_state['dz_config'] = {
+        "capital_inicial": 100000.0,
+        "dd_max_pct":      10.0,
+        "dd_diario_pct":   5.0,
+        "alerta_margen":   3000.0,
+    }
 if 'telegram_config' not in st.session_state:
     st.session_state['telegram_config'] = {"token": "", "chat_id": "", "activo": False}
 if 'alertas_enviadas' not in st.session_state:
@@ -1268,7 +1278,7 @@ with tab4:
             fig_dd.add_trace(go.Scatter(
                 x=df_s['Fecha'], y=df_s['DD_Equity'],
                 name=nombre, line=dict(color=color, width=1.5),
-                fill='tozeroy', fillcolor=color.replace('#','rgba(').replace(')',',0.05)') if '#' in color else 'rgba(128,128,128,0.05)'
+                fill='tozeroy', fillcolor='rgba(128,128,128,0.05)'
             ))
         fig_dd.add_hline(y=3.0, line_dash="dash", line_color="orange", annotation_text="3% alerta")
         fig_dd.add_hline(y=5.0, line_dash="dash", line_color="red",    annotation_text="5% límite")
