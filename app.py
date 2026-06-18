@@ -120,7 +120,7 @@ if 'snapshots' not in st.session_state:
 if 'posiciones_abiertas' not in st.session_state:
     st.session_state['posiciones_abiertas'] = {} 
 if 'capital_inicial' not in st.session_state:
-    st.session_state['capital_inicial'] = 10000.0
+    st.session_state['capital_inicial'] = 100000.0
 if 'cuentas' not in st.session_state:
     st.session_state['cuentas'] = {}
 if 'sqx_benchmarks' not in st.session_state:
@@ -365,17 +365,20 @@ def encontrar_columnas_universal(df):
 
 def mapear_comentarios_mt5(df):
     """
-    Asigna de forma robusta los comentarios del EA original a cierres [sl]/[tp].
-    Elimina registros de depósitos o balances iniciales para evitar sesgar las métricas.
+    Motor definitivo de reconstrucción de Portfolio MT5.
+    Mapea de forma bidireccional los comentarios de transacciones 'In' (entradas) 
+    a transacciones 'Out' (cierres por sl/tp) usando el ID numérico de Posición.
     """
     df = df.copy()
     df.columns = df.columns.str.strip().str.lower()
     
+    # Identificar columnas estructurales de reportes Excel/HTML de MT5
     col_position = next((c for c in df.columns if 'position' in c or 'posicion' in c), None)
     col_ticket = next((c for c in df.columns if 'ticket' in c or 'order' in c or 'deal' in c), None)
     col_comment = next((c for c in df.columns if 'comment' in c or 'comentario' in c), None)
     col_symbol = next((c for c in df.columns if 'symbol' in c or 'símbolo' in c or 'asset' in c), None)
     col_type = next((c for c in df.columns if 'type' in c or 'tipo' in c), None)
+    col_entry = next((c for c in df.columns if 'entry' in c or 'entrada' in c), None)
 
     id_clave = col_position if col_position else col_ticket
 
@@ -383,33 +386,51 @@ def mapear_comentarios_mt5(df):
         df['ea_limpio'] = "EA_Desconocido"
         return df
 
+    # Limpieza inicial de cadenas de texto vacías o corrompidas
     df[col_comment] = df[col_comment].astype(str).str.strip()
-    
-    # Limpieza estricta de filas que son de balance inicial o depósitos
+    df[id_clave] = df[id_clave].astype(str).str.strip()
+
+    # FILTRO DE TIPOS ESPECÍFICOS: Conservar únicamente operaciones puras de compra/venta
     if col_type:
-        df = df[~df[col_type].astype(str).str.contains(r'balance|credit|deposito|deposit|withdrawal', case=False, na=False)]
-    if col_symbol:
-        df = df[df[col_symbol].notna() & (df[col_symbol].astype(str).str.strip() != '') & (df[col_symbol].astype(str).str.strip() != 'nan')]
+        df = df[df[col_type].astype(str).str.strip().str.lower().isin(['buy', 'sell'])]
 
-    # Identificar las entradas verdaderas del EA
-    es_entrada_ea = (
-        (~df[col_comment].str.contains(r'^\[sl|^\[tp', case=False, na=False)) & 
-        (df[col_comment] != '') & (df[col_comment] != 'nan') &
-        (~df[col_comment].str.contains(r'balance|deposit', case=False, na=False))
-    )
-    mapa_posiciones = df[es_entrada_ea].set_index(id_clave)[col_comment].to_dict()
+    # PRIMERA PASADA: Indexar todos los nombres de EAs desde las ejecuciones de Entrada ('In')
+    mapa_posiciones = {}
+    
+    # Si existe la columna estructural 'entry', la usamos para máxima precisión
+    if col_entry:
+        entradas_puras = df[df[col_entry].astype(str).str.strip().str.lower() == 'in']
+        for _, row in entradas_puras.iterrows():
+            pos_id = row[id_clave]
+            comentario = row[col_comment]
+            if pos_id and comentario and comentario != 'nan' and comentario != '' and not re.match(r'^\[sl|^\[tp', comentario, re.IGNORECASE):
+                mapa_posiciones[pos_id] = comentario
+    
+    # Respaldo heurístico en caso de reportes sin columna 'entry' explícita
+    for _, row in df.iterrows():
+        pos_id = row[id_clave]
+        comentario = row[col_comment]
+        if pos_id not in mapa_posiciones or mapa_posiciones[pos_id] in ['', 'nan']:
+            if comentario and comentario != 'nan' and comentario != '' and not re.match(r'^\[sl|^\[tp', comentario, re.IGNORECASE):
+                mapa_posiciones[pos_id] = comentario
 
+    # SEGUNDA PASADA: Asignar de manera retroactiva el EA a las operaciones de Cierre ('Out')
     def asignar_comentario(row):
         pos_id = row[id_clave]
         comm_actual = str(row[col_comment]).strip()
-        if pos_id in mapa_posiciones:
+        simbolo = str(row[col_symbol]).upper() if col_symbol and pd.notna(row[col_symbol]) else "GENERIC"
+        
+        # Si el ID de posición fue mapeado en una entrada legítima, se le devuelve su EA original
+        if pos_id in mapa_posiciones and mapa_posiciones[pos_id] not in ['', 'nan']:
             return mapa_posiciones[pos_id]
+        
+        # Identificaciones automáticas de contingencia para trades huérfanos
         if re.match(r'^\[sl|^\[tp', comm_actual, re.IGNORECASE):
-            simbolo = str(row[col_symbol]).upper() if col_symbol else "UNKNOWN"
             return f"EA_AutoAsignado_{simbolo}"
+            
         if comm_actual == '' or comm_actual == 'nan':
-            simbolo = str(row[col_symbol]).upper() if col_symbol else "GENERIC"
             return f"Manual_{simbolo}"
+            
         return comm_actual
 
     df['ea_limpio'] = df.apply(asignar_comentario, axis=1)
@@ -443,6 +464,10 @@ def calcular_metricas_portfolio(df_trades):
     retornos = beneficios[beneficios != 0]
     sharpe = calcular_sharpe(retornos, periodos_anuales=len(retornos))
 
+    # Cálculo dinámico de comisiones si existe la columna nativa
+    col_comm = next((c for c in df_trades.columns if 'comisi' in str(c).lower() or 'comm' in str(c).lower()), None)
+    comisiones_totales = df_trades[col_comm].sum() if col_comm else 0.0
+
     equity_serie = df_trades['Equity'] if 'Equity' in df_trades.columns else pd.Series()
     if not equity_serie.empty:
         peak = equity_serie.cummax()
@@ -454,7 +479,8 @@ def calcular_metricas_portfolio(df_trades):
     return {
         "profit_factor": pf, "win_rate": win_rate, "avg_win": avg_win, "avg_loss": avg_loss,
         "expectancy": expectancy, "sharpe": sharpe, "max_dd_pct": max_dd,
-        "total_trades": total_trades, "net_profit": round(beneficios.sum(), 2)
+        "total_trades": total_trades, "net_profit": round(beneficios.sum(), 2),
+        "comisiones": round(comisiones_totales, 2)
     }
 
 # ─────────────────────────────────────────────
@@ -564,11 +590,11 @@ with tab2:
         capital_input = st.number_input("Capital Inicial Balance ($)", min_value=100.0, value=st.session_state['capital_inicial'], step=500.0, format="%.2f")
 
 # ══════════════════════════════════════════════
-# TAB 3 — ANÁLISIS HISTÓRICO POR EA (Mapeado definitivo)
+# TAB 3 — ANÁLISIS HISTÓRICO POR EA
 # ══════════════════════════════════════════════
 with tab3:
     st.subheader("📊 Análisis Cuantitativo por EA — Reporte MT5 (Deals)")
-    st.markdown("Filtra automáticamente los cierres por SL o TP delegando la ganancia o pérdida al EA que abrió la posición original.")
+    st.markdown("Reconstruye de forma exacta el historial uniendo ejecuciones de Entrada y Salida mediante el número de Posición.")
     
     archivo_tab3 = archivo_real if archivo_real else st.file_uploader("Subir reporte MT5 para indexar", type=["csv","xlsx","html","htm"], key="uploader_tab3")
 
@@ -580,14 +606,11 @@ with tab3:
             col_fecha, col_profit = encontrar_columnas_universal(df_procesado)
             
             if col_profit is None:
-                st.error("❌ No se encontró la columna de ganancia o beneficio en el reporte.")
+                st.error("❌ No se encontró la columna de beneficio en el reporte.")
             else:
                 df_procesado['Beneficio'] = pd.to_numeric(
                     df_procesado[col_profit].astype(str).str.replace(r'[^\d\.\-]', '', regex=True), errors='coerce'
                 ).fillna(0)
-                
-                # Ignoramos picos absurdos que no son trades (mecanismo de contingencia)
-                df_procesado = df_procesado[df_procesado['Beneficio'] < 500000]
                 
                 if col_fecha:
                     df_procesado = df_procesado.sort_values(col_fecha)
@@ -596,20 +619,22 @@ with tab3:
                 metricas_globales = calcular_metricas_portfolio(df_procesado)
                 
                 if metricas_globales:
-                    st.markdown("### 📈 Rendimiento Histórico Consolidado")
-                    g1, g2, g3, g4, g5 = st.columns(5)
+                    st.markdown("### 📈 Rendimiento Histórico Consolidado (Trades Reales)")
+                    g1, g2, g3, g4, g5, g6 = st.columns(6)
                     g1.metric("Net Profit Real", f"${metricas_globales.get('net_profit', 0):,.2f}")
                     g2.metric("Profit Factor Global", f"{metricas_globales.get('profit_factor', 0)}")
                     g3.metric("Win Rate Promedio", f"{metricas_globales.get('win_rate', 0)}%")
                     g4.metric("Expectancy", f"${metricas_globales.get('expectancy', 0)}")
                     g5.metric("Operaciones Totales", metricas_globales.get('total_trades', 0))
+                    g6.metric("Comisiones Totales", f"${metricas_globales.get('comisiones', 0):,.2f}")
                 
                 st.write("---")
                 st.markdown("### 🏆 Escalafón Desglosado por Estrategia Activa")
 
                 ranking_data = []
                 for name, group in df_procesado.groupby('ea_limpio'):
-                    if group['Beneficio'].abs().sum() == 0: continue
+                    if group['Beneficio'].abs().sum() == 0: 
+                        continue
                     
                     m = calcular_metricas_portfolio(group)
                     pf = m.get('profit_factor', 0)
@@ -625,16 +650,19 @@ with tab3:
                         "Avg Win": f"${m.get('avg_win', 0)}",
                         "Avg Loss": f"${m.get('avg_loss', 0)}",
                         "Expectancy": f"${m.get('expectancy', 0)}",
-                        "Max DD": f"{m.get('max_dd_pct', 0)}%"
+                        "Max DD": f"{m.get('max_dd_pct', 0)}%",
+                        "Comisiones": f"${m.get('comisiones', 0)}"
                     })
                 
                 if ranking_data:
                     df_ranking = pd.DataFrame(ranking_data).sort_values(by="Net Profit", ascending=False).reset_index(drop=True)
                     st.dataframe(df_ranking, use_container_width=True)
                 else:
-                    st.warning("No se pudieron clasificar trades para el ranking.")
-        except Exception as e: st.error(f"❌ Error crítico en Tab 3: {e}")
-    else: st.info("💡 Sube el reporte de MT5 para reconstruir el histórico limpio.")
+                    st.warning("⚠️ No se pudieron clasificar los trades en estrategias en este reporte.")
+        except Exception as e: 
+            st.error(f"❌ Error crítico en Tab 3: {e}")
+    else: 
+        st.info("💡 Sube el reporte de MT5 para reconstruir el histórico limpio.")
 
 # ══════════════════════════════════════════════
 # TAB 4 — MULTI-CUENTA
