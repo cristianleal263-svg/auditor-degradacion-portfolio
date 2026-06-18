@@ -11,7 +11,7 @@ import json
 from datetime import datetime
 
 # ─────────────────────────────────────────────
-# SUPABASE — capa de persistencia
+# SUPABASE — Capa de Persistencia
 # ─────────────────────────────────────────────
 SUPABASE_URL = "https://iikykbyrospnzrsqcjfp.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlpa3lrYnlyb3Nwbnpyc3FjamZwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA4NDU2MjgsImV4cCI6MjA5NjQyMTYyOH0.xDCw6xC-xo2Tm4B7H6au0lcyrtK6MIklJ35s1zhgMlE"
@@ -72,7 +72,7 @@ def sb_delete_old_snapshots(cuenta: str, keep: int = 2000):
         pass
 
 # ─────────────────────────────────────────────
-# CONFIGURACIÓN
+# CONFIGURACIÓN DE LA APP
 # ─────────────────────────────────────────────
 st.set_page_config(
     page_title="Centro de Control - Darwinex Zero",
@@ -80,7 +80,7 @@ st.set_page_config(
     page_icon="🦁"
 )
 
-# CSS personalizado
+# Estilos CSS personalizados
 st.markdown("""
 <style>
     .metric-card {
@@ -111,14 +111,14 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
-# SESSION STATE
+# INITIALIZE SESSION STATE
 # ─────────────────────────────────────────────
 if 'registro_operaciones_en_vivo' not in st.session_state:
     st.session_state['registro_operaciones_en_vivo'] = []
 if 'snapshots' not in st.session_state:
-    st.session_state['snapshots'] = []          # historial equity/balance/margin
+    st.session_state['snapshots'] = []          
 if 'posiciones_abiertas' not in st.session_state:
-    st.session_state['posiciones_abiertas'] = {} # ticket → datos
+    st.session_state['posiciones_abiertas'] = {} 
 if 'capital_inicial' not in st.session_state:
     st.session_state['capital_inicial'] = 10000.0
 if 'cuentas' not in st.session_state:
@@ -141,10 +141,9 @@ if 'alertas_enviadas' not in st.session_state:
 if 'sb_cargado' not in st.session_state:
     st.session_state['sb_cargado'] = False
 
-# ── Recuperar datos de Supabase al arrancar ──────────────────────
+# ── Descarga de datos iniciales desde Supabase ──────────────────
 if not st.session_state['sb_cargado']:
     try:
-        # Trades cerrados
         trades_db = sb_select("trades", limite=5000)
         for t in trades_db:
             reg = {
@@ -173,7 +172,6 @@ if not st.session_state['sb_cargado']:
                 st.session_state['registro_operaciones_en_vivo'].append(reg)
                 st.session_state['cuentas'][acc]["trades"].append(reg)
 
-        # Snapshots recientes
         snaps_db = sb_select("snapshots", limite=500)
         for s in snaps_db:
             acc = s.get("account","default")
@@ -192,7 +190,6 @@ if not st.session_state['sb_cargado']:
             st.session_state['cuentas'][acc]["snapshots"].append(snap)
             st.session_state['snapshots'].append(snap)
 
-        # Posiciones abiertas
         pos_db = sb_select("posiciones", limite=200)
         for p in pos_db:
             ticket = str(p.get("ticket",""))
@@ -217,7 +214,7 @@ if not st.session_state['sb_cargado']:
         pass
 
 # ─────────────────────────────────────────────
-# WEBHOOK RECEPTOR
+# WEBHOOK RECEPTOR DE TELEMETRÍA (MT5)
 # ─────────────────────────────────────────────
 query_params = st.query_params
 if "action" in query_params and query_params["action"] == "webhook_mt5":
@@ -229,9 +226,7 @@ if "action" in query_params and query_params["action"] == "webhook_mt5":
 
         cuentas = st.session_state['cuentas']
         if acc_name not in cuentas:
-            cuentas[acc_name] = {
-                "tipo": acc_type, "snapshots": [], "trades": [], "posiciones": {}
-            }
+            cuentas[acc_name] = {"tipo": acc_type, "snapshots": [], "trades": [], "posiciones": {}}
         cuenta = cuentas[acc_name]
 
         if tipo == "SNAPSHOT":
@@ -248,84 +243,59 @@ if "action" in query_params and query_params["action"] == "webhook_mt5":
             snaps = st.session_state['snapshots']
             if not snaps or snaps[-1]["Equity"] != snap["Equity"]:
                 snaps.append(snap)
-            reg = {"Fecha": ts, "Magic": "0", "Simbolo": "ACCOUNT",
-                   "Tipo": "SNAPSHOT", "Beneficio": snap["ProfitFlot"], "Equity": snap["Equity"],
-                   "Balance": snap["Balance"], "Commission": 0, "Swap": 0,
-                   "ProfitNeto": snap["ProfitFlot"], "Account": acc_name}
+            reg = {"Fecha": ts, "Magic": "0", "Simbolo": "ACCOUNT", "Tipo": "SNAPSHOT", 
+                   "Beneficio": snap["ProfitFlot"], "Equity": snap["Equity"], "Balance": snap["Balance"], 
+                   "Commission": 0, "Swap": 0, "ProfitNeto": snap["ProfitFlot"], "Account": acc_name}
             st.session_state['registro_operaciones_en_vivo'].append(reg)
             if not cuenta["snapshots"] or cuenta["snapshots"][-1]["Equity"] != snap["Equity"]:
                 cuenta["snapshots"].append(snap)
                 sb_insert("snapshots", {
-                    "account":     acc_name,
-                    "acc_type":    acc_type,
-                    "equity":      snap["Equity"],
-                    "balance":     snap["Balance"],
-                    "margin":      snap["Margin"],
-                    "free_margin": snap["FreeMargin"],
-                    "profit_flot": snap["ProfitFlot"],
-                    "dd_equity":   snap["DD_Equity"],
-                    "dd_balance":  snap["DD_Balance"],
+                    "account": acc_name, "acc_type": acc_type, "equity": snap["Equity"], "balance": snap["Balance"],
+                    "margin": snap["Margin"], "free_margin": snap["FreeMargin"], "profit_flot": snap["ProfitFlot"],
+                    "dd_equity": snap["DD_Equity"], "dd_balance": snap["DD_Balance"]
                 })
             verificar_alertas_dd(cuenta["snapshots"], acc_name)
 
         elif tipo == "POSITION_OPEN":
             ticket = str(query_params.get("ticket", "0"))
             pos_data = {
-                "Fecha":      ts,
-                "Magic":      str(query_params.get("magic", "0")),
-                "Simbolo":    str(query_params.get("symbol", "")),
-                "Direccion":  str(query_params.get("direction", "")),
-                "Lots":       float(query_params.get("lots", 0)),
-                "PriceOpen":  float(query_params.get("price_open", 0)),
-                "PriceCur":   float(query_params.get("price_cur", 0)),
-                "Profit":     float(query_params.get("profit", 0)),
-                "Swap":       float(query_params.get("swap", 0)),
-                "SL":         float(query_params.get("sl", 0)),
-                "TP":         float(query_params.get("tp", 0)),
-                "Account":    acc_name,
+                "Fecha": ts, "Magic": str(query_params.get("magic", "0")), "Simbolo": str(query_params.get("symbol", "")),
+                "Direccion": str(query_params.get("direction", "")), "Lots": float(query_params.get("lots", 0)),
+                "PriceOpen": float(query_params.get("price_open", 0)), "PriceCur": float(query_params.get("price_cur", 0)),
+                "Profit": float(query_params.get("profit", 0)), "Swap": float(query_params.get("swap", 0)),
+                "SL": float(query_params.get("sl", 0)), "TP": float(query_params.get("tp", 0)), "Account": acc_name
             }
             st.session_state['posiciones_abiertas'][ticket] = pos_data
             cuenta["posiciones"][ticket] = pos_data
             sb_upsert("posiciones", {
-                "ticket":     ticket, "account":    acc_name, "magic":      pos_data["Magic"],
-                "symbol":     pos_data["Simbolo"], "direction":  pos_data["Direccion"], "lots":       pos_data["Lots"],
-                "price_open": pos_data["PriceOpen"], "price_cur":   pos_data["PriceCur"], "profit":     pos_data["Profit"],
-                "swap":       pos_data["Swap"], "sl":         pos_data["SL"], "tp":         pos_data["TP"],
-                "equity":     float(query_params.get("equity", 0)),
+                "ticket": ticket, "account": acc_name, "magic": pos_data["Magic"], "symbol": pos_data["Simbolo"],
+                "direction": pos_data["Direccion"], "lots": pos_data["Lots"], "price_open": pos_data["PriceOpen"],
+                "price_cur": pos_data["PriceCur"], "profit": pos_data["Profit"], "swap": pos_data["Swap"],
+                "sl": pos_data["SL"], "tp": pos_data["TP"], "equity": float(query_params.get("equity", 0))
             })
 
         elif tipo == "CLOSE":
             ticket = str(query_params.get("ticket", "0"))
             profit_neto = float(query_params.get("profit_net", float(query_params.get("profit", 0))))
             nuevo_trade = {
-                "Fecha":       ts,
-                "Magic":       str(query_params.get("magic", "0")),
-                "Simbolo":     str(query_params.get("symbol", "")),
-                "Tipo":        "CLOSE",
-                "Direccion":   str(query_params.get("direction", "")),
-                "Lots":        float(query_params.get("lots", 0)),
-                "Precio":      float(query_params.get("price", 0)),
-                "Beneficio":   float(query_params.get("profit", 0)),
-                "Commission":  float(query_params.get("commission", 0)),
-                "Swap":        float(query_params.get("swap", 0)),
-                "ProfitNeto":  profit_neto,
-                "Equity":      float(query_params.get("equity", 0)),
-                "Balance":     float(query_params.get("equity", 0)),
-                "Account":     acc_name,
-                "AccType":     acc_type,
+                "Fecha": ts, "Magic": str(query_params.get("magic", "0")), "Simbolo": str(query_params.get("symbol", "")),
+                "Tipo": "CLOSE", "Direccion": str(query_params.get("direction", "")), "Lots": float(query_params.get("lots", 0)),
+                "Precio": float(query_params.get("price", 0)), "Beneficio": float(query_params.get("profit", 0)),
+                "Commission": float(query_params.get("commission", 0)), "Swap": float(query_params.get("swap", 0)),
+                "ProfitNeto": profit_neto, "Equity": float(query_params.get("equity", 0)), "Balance": float(query_params.get("equity", 0)),
+                "Account": acc_name, "AccType": acc_type
             }
             registros = st.session_state['registro_operaciones_en_vivo']
-            tickets_existentes = [r.get("Ticket","") for r in registros]
-            if ticket not in tickets_existentes:
+            if ticket not in [r.get("Ticket","") for r in registros]:
                 nuevo_trade["Ticket"] = ticket
                 registros.append(nuevo_trade)
                 cuenta["trades"].append(nuevo_trade)
                 sb_upsert("trades", {
-                    "ticket":      ticket, "account":     acc_name, "acc_type":    acc_type,
-                    "magic":       nuevo_trade["Magic"], "symbol":      nuevo_trade["Simbolo"], "direction":   nuevo_trade["Direccion"],
-                    "lots":        nuevo_trade["Lots"], "precio":      nuevo_trade["Precio"], "profit":      nuevo_trade["Beneficio"],
-                    "commission":  nuevo_trade["Commission"], "swap":        nuevo_trade["Swap"], "profit_neto": profit_neto,
-                    "equity":      nuevo_trade["Equity"], "close_time":  int(query_params.get("close_time", 0)),
+                    "ticket": ticket, "account": acc_name, "acc_type": acc_type, "magic": nuevo_trade["Magic"],
+                    "symbol": nuevo_trade["Simbolo"], "direction": nuevo_trade["Direccion"], "lots": nuevo_trade["Lots"],
+                    "precio": nuevo_trade["Precio"], "profit": nuevo_trade["Beneficio"], "commission": nuevo_trade["Commission"],
+                    "swap": nuevo_trade["Swap"], "profit_neto": profit_neto, "equity": nuevo_trade["Equity"],
+                    "close_time": int(query_params.get("close_time", 0))
                 })
             try:
                 url_del = f"{SUPABASE_URL}/rest/v1/posiciones?ticket=eq.{ticket}"
@@ -335,24 +305,12 @@ if "action" in query_params and query_params["action"] == "webhook_mt5":
                 pass
             st.session_state['posiciones_abiertas'].pop(ticket, None)
             cuenta["posiciones"].pop(ticket, None)
-            cuenta["tipo"] = acc_type
 
-        else:
-            nuevo_trade = {
-                "Fecha": ts, "Magic": str(query_params.get("magic","0")),
-                "Simbolo": str(query_params.get("symbol","PORTFOLIO")),
-                "Tipo": tipo, "Beneficio": float(query_params.get("profit",0)),
-                "Equity": float(query_params.get("equity",0)),
-                "Commission": 0, "Swap": 0, "ProfitNeto": float(query_params.get("profit",0))
-            }
-            registros = st.session_state['registro_operaciones_en_vivo']
-            if not registros or registros[-1]["Equity"] != nuevo_trade["Equity"]:
-                registros.append(nuevo_trade)
     except Exception:
         pass
 
 # ─────────────────────────────────────────────
-# FUNCIONES AUXILIARES — TAB 1 Y MAPEO MT5
+# PARSERS INTELIGENTES Y ASIGNACIÓN DE ÓRDENES
 # ─────────────────────────────────────────────
 def procesar_csv_sucio(archivo):
     contenido = archivo.read().decode('utf-8', errors='ignore')
@@ -365,10 +323,8 @@ def procesar_csv_sucio(archivo):
 def leer_archivo_inteligente(archivo):
     try:
         df = procesar_csv_sucio(archivo)
-        if len(df.columns) > 2:
-            return df
-    except Exception:
-        pass
+        if len(df.columns) > 2: return df
+    except Exception: pass
     archivo.seek(0)
     contenido = archivo.read()
     for engine in [
@@ -378,19 +334,15 @@ def leer_archivo_inteligente(archivo):
         try:
             df = engine()
             df.columns = df.columns.str.strip()
-            if len(df.columns) > 1:
-                return df
-        except Exception:
-            pass
+            if len(df.columns) > 1: return df
+        except Exception: pass
     try:
         tablas = pd.read_html(io.BytesIO(contenido))
         for t in tablas:
             t.columns = t.columns.astype(str).str.strip()
-            if len(t.columns) > 3:
-                return t
+            if len(t.columns) > 3: return t
         return max(tablas, key=len)
-    except Exception:
-        pass
+    except Exception: pass
     raise ValueError("Formato no soportado.")
 
 def encontrar_columnas_universal(df):
@@ -399,41 +351,56 @@ def encontrar_columnas_universal(df):
     mapeo_profits = ['profit/loss','p/l in money','profit','loss','beneficio','p/l','ganancia','ganancia/pérdida','monto']
     columnas_lower = [str(c).lower() for c in df.columns]
     for mf in mapeo_fechas:
-        if mf in columnas_lower:
-            col_fecha = df.columns[columnas_lower.index(mf)]; break
+        if mf in columnas_lower: col_fecha = df.columns[columnas_lower.index(mf)]; break
     for mp in mapeo_profits:
-        if mp in columnas_lower:
-            col_profit = df.columns[columnas_lower.index(mp)]; break
+        if mp in columnas_lower: col_profit = df.columns[columnas_lower.index(mp)]; break
     if col_fecha is None or col_profit is None:
         for col in df.columns:
             primeros = df[col].dropna().head(15).astype(str)
-            if col_fecha is None and primeros.str.contains(r'\d{4}[-./]\d{2}[-./]\d{2}').any():
-                col_fecha = col
+            if col_fecha is None and primeros.str.contains(r'\d{4}[-./]\d{2}[-./]\d{2}').any(): col_fecha = col
             if col_profit is None and col != col_fecha:
                 nums = pd.to_numeric(primeros.str.replace(r'[^\d\.\-]','',regex=True), errors='coerce')
-                if nums.notna().sum() > 3 and not (nums == 0).all():
-                    col_profit = col
+                if nums.notna().sum() > 3 and not (nums == 0).all(): col_profit = col
     return col_fecha, col_profit
 
 def mapear_comentarios_mt5(df):
-    """Mapea cierres por SL/TP heredando el comentario original del deal de entrada."""
+    """
+    Asigna de forma robusta los comentarios del EA original a cierres [sl]/[tp].
+    Elimina registros de depósitos o balances iniciales para evitar sesgar las métricas.
+    """
+    df = df.copy()
     df.columns = df.columns.str.strip().str.lower()
-    col_position = next((c for c in df.columns if 'position' in c or 'posicion' in c or 'ticket' in c), None)
+    
+    col_position = next((c for c in df.columns if 'position' in c or 'posicion' in c), None)
+    col_ticket = next((c for c in df.columns if 'ticket' in c or 'order' in c or 'deal' in c), None)
     col_comment = next((c for c in df.columns if 'comment' in c or 'comentario' in c), None)
     col_symbol = next((c for c in df.columns if 'symbol' in c or 'símbolo' in c or 'asset' in c), None)
+    col_type = next((c for c in df.columns if 'type' in c or 'tipo' in c), None)
 
-    if not col_position or not col_comment:
+    id_clave = col_position if col_position else col_ticket
+
+    if not col_comment or not id_clave:
+        df['ea_limpio'] = "EA_Desconocido"
         return df
 
     df[col_comment] = df[col_comment].astype(str).str.strip()
+    
+    # Limpieza estricta de filas que son de balance inicial o depósitos
+    if col_type:
+        df = df[~df[col_type].astype(str).str.contains(r'balance|credit|deposito|deposit|withdrawal', case=False, na=False)]
+    if col_symbol:
+        df = df[df[col_symbol].notna() & (df[col_symbol].astype(str).str.strip() != '') & (df[col_symbol].astype(str).str.strip() != 'nan')]
+
+    # Identificar las entradas verdaderas del EA
     es_entrada_ea = (
         (~df[col_comment].str.contains(r'^\[sl|^\[tp', case=False, na=False)) & 
-        (df[col_comment] != '') & (df[col_comment] != 'nan')
+        (df[col_comment] != '') & (df[col_comment] != 'nan') &
+        (~df[col_comment].str.contains(r'balance|deposit', case=False, na=False))
     )
-    mapa_posiciones = df[es_entrada_ea].set_index(col_position)[col_comment].to_dict()
+    mapa_posiciones = df[es_entrada_ea].set_index(id_clave)[col_comment].to_dict()
 
     def asignar_comentario(row):
-        pos_id = row[col_position]
+        pos_id = row[id_clave]
         comm_actual = str(row[col_comment]).strip()
         if pos_id in mapa_posiciones:
             return mapa_posiciones[pos_id]
@@ -449,20 +416,16 @@ def mapear_comentarios_mt5(df):
     return df
 
 # ─────────────────────────────────────────────
-# FUNCIONES MÉTRICAS — TAB 2
+# CÁLCULOS CUANTITATIVOS
 # ─────────────────────────────────────────────
 def calcular_sharpe(serie_retornos, periodos_anuales=252):
-    if len(serie_retornos) < 2:
-        return 0.0
+    if len(serie_retornos) < 2: return 0.0
     media = serie_retornos.mean()
     std   = serie_retornos.std()
-    if std == 0:
-        return 0.0
-    return round((media / std) * math.sqrt(periodos_anuales), 2)
+    return round((media / std) * math.sqrt(periodos_anuales), 2) if std > 0 else 0.0
 
 def calcular_metricas_portfolio(df_trades):
-    if df_trades.empty:
-        return {}
+    if df_trades.empty: return {}
     beneficios = df_trades['Beneficio']
     ganancias  = beneficios[beneficios > 0]
     perdidas   = beneficios[beneficios < 0]
@@ -480,7 +443,7 @@ def calcular_metricas_portfolio(df_trades):
     retornos = beneficios[beneficios != 0]
     sharpe = calcular_sharpe(retornos, periodos_anuales=len(retornos))
 
-    equity_serie = df_trades['Equity']
+    equity_serie = df_trades['Equity'] if 'Equity' in df_trades.columns else pd.Series()
     if not equity_serie.empty:
         peak = equity_serie.cummax()
         dd_serie = (equity_serie - peak) / peak * 100
@@ -488,103 +451,39 @@ def calcular_metricas_portfolio(df_trades):
     else:
         max_dd = 0.0
 
-    recovery = round(beneficios.sum() / abs(max_dd) * 100, 2) if max_dd != 0 else 0
     return {
         "profit_factor": pf, "win_rate": win_rate, "avg_win": avg_win, "avg_loss": avg_loss,
-        "expectancy": expectancy, "sharpe": sharpe, "max_dd_pct": max_dd, "recovery_factor": recovery,
+        "expectancy": expectancy, "sharpe": sharpe, "max_dd_pct": max_dd,
         "total_trades": total_trades, "net_profit": round(beneficios.sum(), 2)
     }
 
-def color_pf(pf):
-    if pf == float('inf') or pf >= 1.5: return "🟢"
-    if pf >= 1.2: return "🟡"
-    return "🔴"
-
-def color_sharpe(s):
-    if s >= 1.0: return "🟢"
-    if s >= 0.5: return "🟡"
-    return "🔴"
-
 # ─────────────────────────────────────────────
-# TELEGRAM
+# NOTIFICACIONES TELEGRAM
 # ─────────────────────────────────────────────
 def enviar_telegram(mensaje: str) -> bool:
     cfg = st.session_state.get('telegram_config', {})
-    token   = cfg.get("token", "")
-    chat_id = cfg.get("chat_id", "")
-    if not token or not chat_id:
-        return False
+    token, chat_id = cfg.get("token", ""), cfg.get("chat_id", "")
+    if not token or not chat_id: return False
     try:
         url  = f"https://api.telegram.org/bot{token}/sendMessage"
         data = urllib.parse.urlencode({"chat_id": chat_id, "text": mensaje, "parse_mode": "Markdown"}).encode()
-        req  = urllib.request.Request(url, data=data)
-        urllib.request.urlopen(req, timeout=5)
+        urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=5)
         return True
-    except Exception:
-        return False
+    except Exception: return False
 
 def verificar_alertas_dd(snapshots: list, cuenta: str):
-    if not snapshots: return
-    cfg = st.session_state.get('telegram_config', {})
-    if not cfg.get("activo"): return
-    ultimo = snapshots[-1]
-    dd = ultimo.get("DD_Equity", 0)
+    if not snapshots or not st.session_state.get('telegram_config', {}).get("activo"): return
+    dd = snapshots[-1].get("DD_Equity", 0)
     alertas = st.session_state['alertas_enviadas']
     for umbral, emoji in [(5.0, "🚨"), (3.0, "⚠️")]:
         clave = f"{cuenta}_dd{umbral}"
         if dd >= umbral and clave not in alertas:
-            msg = (f"{emoji} *ALERTA DD — {cuenta}*\n"
-                   f"DD actual: `{dd:.2f}%`\n"
-                   f"Equity: `${ultimo.get('Equity',0):,.2f}`\n"
-                   f"Balance: `${ultimo.get('Balance',0):,.2f}`")
-            if enviar_telegram(msg):
-                alertas.add(clave)
-        elif dd < umbral * 0.5:
-            alertas.discard(clave)
+            msg = f"{emoji} *ALERTA DD — {cuenta}*\nDD actual: `{dd:.2f}%`\nEquity: `${snapshots[-1].get('Equity',0):,.2f}`"
+            if enviar_telegram(msg): alertas.add(clave)
+        elif dd < umbral * 0.5: alertas.discard(clave)
 
 # ─────────────────────────────────────────────
-# COMPARADOR SQX — funciones auxiliares
-# ─────────────────────────────────────────────
-def parsear_sqx_html(contenido_bytes) -> dict:
-    try:
-        tablas = pd.read_html(io.BytesIO(contenido_bytes))
-    except Exception:
-        return {}
-    profits = []
-    for t in tablas:
-        t.columns = t.columns.astype(str).str.lower().str.strip()
-        for col in t.columns:
-            if any(k in col for k in ['profit','p/l','ganancia','beneficio']):
-                vals = pd.to_numeric(t[col].astype(str).str.replace(r'[^\d\.\-]','',regex=True), errors='coerce').dropna()
-                if len(vals) > 5:
-                    profits.extend(vals.tolist())
-                    break
-    if not profits:
-        return {}
-    s = pd.Series(profits)
-    g = s[s > 0]; l = s[s < 0]
-    pf  = round(g.sum()/abs(l.sum()), 2) if abs(l.sum()) > 0 else float('inf')
-    wr  = round(len(g)/len(s)*100, 1)
-    exp = round((wr/100 * g.mean() if not g.empty else 0) + ((1-wr/100) * l.mean() if not l.empty else 0), 2)
-    return {
-        "pf": pf, "wr": wr, "expectancy": exp, "avg_win": round(g.mean(), 2) if not g.empty else 0,
-        "avg_loss": round(l.mean(), 2) if not l.empty else 0, "trades": len(s), "net_profit": round(s.sum(), 2),
-    }
-
-def delta_semaforo(live_val, sqx_val, mayor_es_mejor=True):
-    if sqx_val == 0:
-        return "N/A", "⚪"
-    ratio = live_val / sqx_val
-    delta = live_val - sqx_val
-    delta_str = f"{delta:+.2f} ({ratio*100:.0f}% del backtest)"
-    if mayor_es_mejor:
-        emoji = "🟢" if ratio >= 0.85 else "🟡" if ratio >= 0.65 else "🔴"
-    else:
-        emoji = "🟢" if ratio <= 1.15 else "🟡" if ratio <= 1.35 else "🔴"
-    return delta_str, emoji
-
-# ─────────────────────────────────────────────
-# LAYOUT PRINCIPAL
+# LAYOUT DE PESTAÑAS (INTERFAZ)
 # ─────────────────────────────────────────────
 st.title("🦁 Centro de Control de Portfolio — Darwinex Zero")
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -596,22 +495,19 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 ])
 
 # ══════════════════════════════════════════════
-# TAB 1 — ANÁLISIS ESTÁTICO
+# TAB 1 — COMPORTAMIENTO ESTÁTICO
 # ══════════════════════════════════════════════
 with tab1:
     st.subheader("Análisis Estático: Quant Analyzer vs. Cuenta Real Darwinex Zero (MT5)")
     umbral_alerta = st.slider("Umbral de Alerta ($)", 0, 2000, 200, 50, key="slider_tab1")
 
     col1, col2 = st.columns(2)
-    with col1:
-        archivo_qa   = st.file_uploader("Subir informe de QA", type=["csv","xlsx","html","htm"], key="qa")
-    with col2:
-        archivo_real = st.file_uploader("Subir reporte exportado de MT5", type=["csv","xlsx","html","htm"], key="real")
+    with col1: archivo_qa = st.file_uploader("Subir informe de QA", type=["csv","xlsx","html","htm"], key="qa")
+    with col2: archivo_real = st.file_uploader("Subir reporte exportado de MT5", type=["csv","xlsx","html","htm"], key="real")
 
     if archivo_qa and archivo_real:
         try:
             df_qa = leer_archivo_inteligente(archivo_qa)
-            archivo_real.seek(0)
             f_qa, p_qa = encontrar_columnas_universal(df_qa)
             df_qa['Fecha_Clean'] = pd.to_datetime(df_qa[f_qa], errors='coerce')
             df_qa = df_qa.dropna(subset=['Fecha_Clean'])
@@ -621,25 +517,21 @@ with tab1:
             df_qa['Teorico'] = pd.to_numeric(df_qa[p_qa], errors='coerce').fillna(0)
             df_qa_mensual = df_qa.groupby('Periodo')['Teorico'].sum().reset_index()
 
+            archivo_real.seek(0)
             df_broker = leer_archivo_inteligente(archivo_real)
             f_br, p_br = encontrar_columnas_universal(df_broker)
             df_broker['Fecha_Clean'] = pd.to_datetime(df_broker[f_br], errors='coerce')
-            if df_broker['Fecha_Clean'].isna().all():
-                df_broker['Fecha_Clean'] = pd.to_datetime(df_broker[f_br], format='mixed', errors='coerce')
             df_broker = df_broker.dropna(subset=['Fecha_Clean'])
             df_broker['Periodo'] = df_broker['Fecha_Clean'].dt.to_period('M').astype(str)
             if df_broker[p_br].dtype == 'object':
-                df_broker[p_br] = df_broker[p_br].astype(str).str.replace(' ','').str.replace(',','')
-                df_broker[p_br] = df_broker[p_br].str.replace(r'[^\d\.\-]','',regex=True)
+                df_broker[p_br] = df_broker[p_br].astype(str).str.replace(r'[^\d\.\-]','',regex=True)
             df_broker['Real'] = pd.to_numeric(df_broker[p_br], errors='coerce').fillna(0)
             df_real_mensual = df_broker.groupby('Periodo')['Real'].sum().reset_index()
 
-            df_final = pd.merge(df_qa_mensual, df_real_mensual, on='Periodo', how='outer').fillna(0)
-            df_final = df_final.sort_values('Periodo').reset_index(drop=True)
+            df_final = pd.merge(df_qa_mensual, df_real_mensual, on='Periodo', how='outer').fillna(0).sort_values('Periodo').reset_index(drop=True)
             df_final['Desviacion'] = df_final['Real'] - df_final['Teorico']
 
-            tot_teorico = df_final['Teorico'].sum()
-            tot_real    = df_final['Real'].sum()
+            tot_teorico, tot_real = df_final['Teorico'].sum(), df_final['Real'].sum()
             degradacion = (tot_real - tot_teorico) / tot_teorico * 100 if tot_teorico != 0 else 0
 
             st.write("---")
@@ -647,46 +539,38 @@ with tab1:
             k1.metric("Ganancia Teórica Total",  f"${tot_teorico:,.2f}")
             k2.metric("Ganancia Real Total",      f"${tot_real:,.2f}", delta=f"${tot_real - tot_teorico:,.2f}")
             k3.metric("Degradación del Portfolio", f"{degradacion:.2f}%")
-            k4.metric("Meses con Alerta (>${:.0f})".format(umbral_alerta), str(len(df_final[abs(df_final['Desviacion']) > umbral_alerta])))
+            k4.metric("Meses Críticos", str(len(df_final[abs(df_final['Desviacion']) > umbral_alerta])))
 
             fig = go.Figure()
-            fig.add_trace(go.Bar(x=df_final['Periodo'], y=df_final['Teorico'],  name='Teórico (QA)',   marker_color='#1f77b4'))
-            fig.add_trace(go.Bar(x=df_final['Periodo'], y=df_final['Real'],     name='Real (Broker)',   marker_color='#2ca02c'))
-            fig.add_trace(go.Scatter(x=df_final['Periodo'], y=df_final['Desviacion'], name='Desviación Neta', line=dict(color='#d62728', width=3, dash='dot'), mode='lines+markers'))
-            fig.add_hline(y=umbral_alerta,  line_dash="dash", line_color="orange", annotation_text=f"+${umbral_alerta}")
-            fig.add_hline(y=-umbral_alerta, line_dash="dash", line_color="orange", annotation_text=f"-${umbral_alerta}")
-            fig.update_layout(barmode='group', template="plotly_dark", xaxis_title="Mes", yaxis_title="Balance ($)", height=420, margin=dict(t=20))
+            fig.add_trace(go.Bar(x=df_final['Periodo'], y=df_final['Teorico'],  name='Teórico (QA)', marker_color='#1f77b4'))
+            fig.add_trace(go.Bar(x=df_final['Periodo'], y=df_final['Real'],     name='Real (Broker)', marker_color='#2ca02c'))
+            fig.add_trace(go.Scatter(x=df_final['Periodo'], y=df_final['Desviacion'], name='Desviación Neta', line=dict(color='#d62728', width=3, dash='dot')))
+            fig.update_layout(barmode='group', template="plotly_dark", height=420, margin=dict(t=20))
             st.plotly_chart(fig, use_container_width=True)
             st.dataframe(df_final, use_container_width=True)
-        except Exception as e:
-            st.error(f"❌ Error procesando archivos: {e}")
-    else:
-        st.info("💡 Sube tus archivos históricos para calcular la degradación mensual.")
+        except Exception as e: st.error(f"❌ Error en Tab 1: {e}")
+    else: st.info("💡 Sube los informes para procesar la degradación estática.")
 
 # ══════════════════════════════════════════════
-# TAB 2 — MONITOR EN TIEMPO REAL
+# TAB 2 — MONITOR TELEMETRÍA EN VIVO
 # ══════════════════════════════════════════════
 with tab2:
     st.subheader("Análisis Dinámico: Monitor Activo de Portfolio (MQL5 → Webhook)")
-
-    cfg1, cfg2, cfg3 = st.columns([2, 1, 1])
+    cfg1, cfg2 = st.columns([3, 1])
     with cfg1:
-        url_actual = st.text_input("URL de tu app (para el webhook en MT5)", value="https://TU-APP.streamlit.app")
-        st.code(f"{url_actual}/?action=webhook_mt5&magic=22001&symbol=XAUUSD&type=CLOSE&profit=12.50&equity=10250.00", language="text")
+        url_actual = st.text_input("URL Base de Webhook", value="https://TU-APP.streamlit.app")
+        st.code(f"{url_actual}/?action=webhook_mt5&type=CLOSE&profit=12.50&ticket=2040938356", language="text")
     with cfg2:
-        capital_input = st.number_input("Capital Inicial ($)", min_value=1000.0, value=st.session_state['capital_inicial'], step=500.0, format="%.2f")
+        capital_input = st.number_input("Capital Inicial Balance ($)", min_value=100.0, value=st.session_state['capital_inicial'], step=500.0, format="%.2f")
 
 # ══════════════════════════════════════════════
-# TAB 3 — ANÁLISIS HISTÓRICO POR EA (Mapeado e Indexado)
+# TAB 3 — ANÁLISIS HISTÓRICO POR EA (Mapeado definitivo)
 # ══════════════════════════════════════════════
 with tab3:
     st.subheader("📊 Análisis Cuantitativo por EA — Reporte MT5 (Deals)")
-    st.markdown("""
-    Exporta desde MT5 $\rightarrow$ Historial $\rightarrow$ Reporte $\rightarrow$ Open XML (Excel). 
-    La app detectará automáticamente las posiciones vinculadas y recuperará el nombre del EA original aunque haya cerrado por SL/TP.
-    """)
+    st.markdown("Filtra automáticamente los cierres por SL o TP delegando la ganancia o pérdida al EA que abrió la posición original.")
     
-    archivo_tab3 = archivo_real if archivo_real else st.file_uploader("Subir reporte MT5 (.csv, .xlsx, .html)", key="uploader_tab3")
+    archivo_tab3 = archivo_real if archivo_real else st.file_uploader("Subir reporte MT5 para indexar", type=["csv","xlsx","html","htm"], key="uploader_tab3")
 
     if archivo_tab3:
         try:
@@ -695,73 +579,76 @@ with tab3:
             df_procesado = mapear_comentarios_mt5(df_raw)
             col_fecha, col_profit = encontrar_columnas_universal(df_procesado)
             
-            df_procesado['Beneficio'] = pd.to_numeric(
-                df_procesado[col_profit].astype(str).str.replace(r'[^\d\.\-]', '', regex=True), errors='coerce'
-            ).fillna(0)
-            
-            if 'equity' not in df_procesado.columns:
-                df_procesado = df_procesado.sort_values(col_fecha)
+            if col_profit is None:
+                st.error("❌ No se encontró la columna de ganancia o beneficio en el reporte.")
+            else:
+                df_procesado['Beneficio'] = pd.to_numeric(
+                    df_procesado[col_profit].astype(str).str.replace(r'[^\d\.\-]', '', regex=True), errors='coerce'
+                ).fillna(0)
+                
+                # Ignoramos picos absurdos que no son trades (mecanismo de contingencia)
+                df_procesado = df_procesado[df_procesado['Beneficio'] < 500000]
+                
+                if col_fecha:
+                    df_procesado = df_procesado.sort_values(col_fecha)
                 df_procesado['Equity'] = capital_input + df_procesado['Beneficio'].cumsum()
 
-            metricas_globales = calcular_metricas_portfolio(df_procesado)
-            
-            st.markdown("### 📈 Performance Global del Portfolio")
-            g1, g2, g3, g4, g5 = st.columns(5)
-            g1.metric("Net Profit", f"${metricas_globales.get('net_profit', 0):,.2f}")
-            g2.metric("Profit Factor", f"{metricas_globales.get('profit_factor', 0)}")
-            g3.metric("Win Rate", f"{metricas_globales.get('win_rate', 0)}%")
-            g4.metric("Expectancy", f"${metricas_globales.get('expectancy', 0)}")
-            g5.metric("Total Trades", metricas_globales.get('total_trades', 0))
-            
-            st.write("---")
-            st.markdown("### 🏆 Ranking de EAs por Performance Real")
-
-            ranking_data = []
-            for name, group in df_procesado.groupby('ea_limpio'):
-                if group['Beneficio'].abs().sum() == 0: 
-                    continue
-                    
-                m = calcular_metricas_portfolio(group)
-                pf = m.get('profit_factor', 0)
-                status = "🔴" if pf < 1.1 else "🟡" if pf < 1.4 else "🟢"
+                metricas_globales = calcular_metricas_portfolio(df_procesado)
                 
-                ranking_data.append({
-                    "Estado": status,
-                    "EA / Estrategia": name,
-                    "Trades": m.get('total_trades', 0),
-                    "Net Profit": round(m.get('net_profit', 0), 2),
-                    "PF": pf,
-                    "WR%": f"{m.get('win_rate', 0)}%",
-                    "Avg Win": f"${m.get('avg_win', 0)}",
-                    "Avg Loss": f"${m.get('avg_loss', 0)}",
-                    "Expectancy": f"${m.get('expectancy', 0)}",
-                    "Max DD": f"{m.get('max_dd_pct', 0)}%"
-                })
-            
-            if ranking_data:
-                df_ranking = pd.DataFrame(ranking_data).sort_values(by="Net Profit", ascending=False).reset_index(drop=True)
-                st.dataframe(df_ranking, use_container_width=True)
-            else:
-                st.warning("No se pudieron extraer métricas individuales.")
-        except Exception as e:
-            st.error(f"❌ Error al procesar el ranking de la Tab 3: {e}")
-    else:
-        st.info("💡 Sube un reporte detallado en la sección estática o aquí para armar el ranking por EA.")
+                if metricas_globales:
+                    st.markdown("### 📈 Rendimiento Histórico Consolidado")
+                    g1, g2, g3, g4, g5 = st.columns(5)
+                    g1.metric("Net Profit Real", f"${metricas_globales.get('net_profit', 0):,.2f}")
+                    g2.metric("Profit Factor Global", f"{metricas_globales.get('profit_factor', 0)}")
+                    g3.metric("Win Rate Promedio", f"{metricas_globales.get('win_rate', 0)}%")
+                    g4.metric("Expectancy", f"${metricas_globales.get('expectancy', 0)}")
+                    g5.metric("Operaciones Totales", metricas_globales.get('total_trades', 0))
+                
+                st.write("---")
+                st.markdown("### 🏆 Escalafón Desglosado por Estrategia Activa")
+
+                ranking_data = []
+                for name, group in df_procesado.groupby('ea_limpio'):
+                    if group['Beneficio'].abs().sum() == 0: continue
+                    
+                    m = calcular_metricas_portfolio(group)
+                    pf = m.get('profit_factor', 0)
+                    status = "🔴" if pf < 1.1 else "🟡" if pf < 1.4 else "🟢"
+                    
+                    ranking_data.append({
+                        "Estado": status,
+                        "EA / Estrategia": name,
+                        "Trades": m.get('total_trades', 0),
+                        "Net Profit": round(m.get('net_profit', 0), 2),
+                        "PF": pf,
+                        "WR%": f"{m.get('win_rate', 0)}%",
+                        "Avg Win": f"${m.get('avg_win', 0)}",
+                        "Avg Loss": f"${m.get('avg_loss', 0)}",
+                        "Expectancy": f"${m.get('expectancy', 0)}",
+                        "Max DD": f"{m.get('max_dd_pct', 0)}%"
+                    })
+                
+                if ranking_data:
+                    df_ranking = pd.DataFrame(ranking_data).sort_values(by="Net Profit", ascending=False).reset_index(drop=True)
+                    st.dataframe(df_ranking, use_container_width=True)
+                else:
+                    st.warning("No se pudieron clasificar trades para el ranking.")
+        except Exception as e: st.error(f"❌ Error crítico en Tab 3: {e}")
+    else: st.info("💡 Sube el reporte de MT5 para reconstruir el histórico limpio.")
 
 # ══════════════════════════════════════════════
-# TAB 4 — MULTI-CUENTA (Estructura de marcador)
+# TAB 4 — MULTI-CUENTA
 # ══════════════════════════════════════════════
 with tab4:
-    st.subheader("🌐 Gestión de Cuentas Múltiples")
+    st.subheader("🌐 Gestión Multicuenta en Red")
     if st.session_state['cuentas']:
         for acc_id, acc_data in st.session_state['cuentas'].items():
-            st.text(f"Cuenta detectada: {acc_id} [{acc_data.get('tipo', 'DESCONOCIDO')}]")
-    else:
-        st.info("No hay telemetría multi-cuenta registrada todavía.")
+            st.text(f"ID Cuenta Activa: {acc_id} — Entorno: {acc_data.get('tipo', 'DESCONOCIDO')}")
+    else: st.info("Esperando señales de terminales externas...")
 
 # ══════════════════════════════════════════════
-# TAB 5 — COMPARADOR CONFIG / TELEGRAM
+# TAB 5 — PANEL CONFIG / ALERTAS
 # ══════════════════════════════════════════════
 with tab5:
-    st.subheader("🔬 Benchmarks de Quant Analyzer vs Servidor en Vivo")
-    st.info("Configura los umbrales de tus estrategias y notificaciones acá.")
+    st.subheader("🔬 Control de Umbrales Críticos de Simulación")
+    st.info("Parámetros y configuraciones de alertas de Telegram.")
