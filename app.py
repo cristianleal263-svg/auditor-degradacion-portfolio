@@ -922,271 +922,237 @@ with tab2:
 # TAB 3 — ANÁLISIS HISTÓRICO POR EA
 # ══════════════════════════════════════════════
 with tab3:
-    st.subheader("📊 Análisis Histórico por EA — Reporte MT5")
-    st.caption("Exportá desde MT5 → History → click derecho → **Save as Detailed Report** (xlsx o html). La app detecta el nombre del EA desde el campo Comment.")
+    st.subheader("🔬 Análisis Cuantitativo por EA — Reporte MT5 (Deals)")
+    st.caption("Exportá desde MT5 → History → Report → Open XML. La app detecta la sección **Deals** y clasifica cada operación por EA usando el campo Comment.")
 
     archivo_hist = st.file_uploader(
-        "Subir historial completo de MT5 (Statement / Account History)",
-        type=["csv","xlsx","html","htm"], key="hist_ea"
+        "Subir reporte MT5 (xlsx con sección Deals)",
+        type=["xlsx","xls"], key="hist_ea"
     )
 
     if archivo_hist:
         try:
             contenido = archivo_hist.read()
-            archivo_hist.seek(0)
 
-            # ── Detectar formato MT5 Positions (xlsx con header en fila 6) ──
-            df_hist = None
-            es_formato_mt5_positions = False
+            # ── Detectar fila header de Deals ──────────────────────────
+            df_raw = pd.read_excel(io.BytesIO(contenido), header=None)
+            deals_row = None
+            for i, row in df_raw.iterrows():
+                vals = [str(v).strip().lower() for v in row.tolist()]
+                if 'deal' in vals and 'symbol' in vals and 'profit' in vals and 'comment' in vals:
+                    deals_row = i
+                    break
 
-            if archivo_hist.name.endswith(('.xlsx','.xls')):
-                try:
-                    df_check = pd.read_excel(io.BytesIO(contenido), header=None, nrows=8)
-                    # Detectar si fila 6 tiene "Time","Position","Symbol"
-                    row6 = [str(v).strip() for v in df_check.iloc[6].tolist() if str(v) != 'nan']
-                    if 'Time' in row6 and 'Symbol' in row6 and ('Position' in row6 or 'Profit' in row6):
-                        es_formato_mt5_positions = True
-                        df_hist = pd.read_excel(io.BytesIO(contenido), header=6)
-                        # Renombrar columnas duplicadas
-                        cols = ['OpenTime','Ticket','Symbol','Type','Volume','OpenPrice',
-                                'SL','TP','CloseTime','ClosePrice','Commission','Swap','Profit','Comment']
-                        df_hist.columns = cols[:len(df_hist.columns)]
-                        # Filtrar filas de resumen (no-numéricas en Ticket)
-                        df_hist = df_hist[pd.to_numeric(df_hist['Ticket'], errors='coerce').notna()].copy()
-                        df_hist = df_hist[pd.to_numeric(df_hist['Profit'], errors='coerce').notna()].copy()
-                        df_hist['_fecha']  = pd.to_datetime(df_hist['CloseTime'], errors='coerce')
-                        df_hist['_profit'] = pd.to_numeric(df_hist['Profit'], errors='coerce').fillna(0)
-                        df_hist['_comm']   = pd.to_numeric(df_hist['Commission'], errors='coerce').fillna(0)
-                        df_hist['_swap']   = pd.to_numeric(df_hist['Swap'], errors='coerce').fillna(0)
-                        df_hist['_symbol'] = df_hist['Symbol'].astype(str)
-                        # EA Name desde Comment — limpiar prefijos de SQX
-                        def extraer_nombre_ea(comment):
-                            if pd.isna(comment) or str(comment).startswith('['):
-                                return "Manual/Desconocido"
-                            c = str(comment).strip()
-                            # Quitar sufijos numéricos tipo _1_95, _4.27.135
-                            c = re.sub(r'_\d+[\._]\d+.*$', '', c)
-                            return c.strip('_').strip()
-                        df_hist['_ea_name'] = df_hist['Comment'].apply(extraer_nombre_ea)
-                        # Magic no está en este formato — usar ea_name como agrupador
-                        df_hist['_magic'] = df_hist['_ea_name']
-                except Exception:
-                    pass
+            if deals_row is None:
+                st.error("❌ No se encontró la sección Deals. Asegurate de exportar con Report → Open XML.")
+                st.stop()
 
-            # ── Fallback: parser universal ──
-            if df_hist is None:
-                df_hist = leer_archivo_inteligente(archivo_hist)
-                cols_lower = {str(c).lower().strip(): c for c in df_hist.columns}
-                col_fecha  = next((cols_lower[k] for k in ['close time','time','fecha','date','open time'] if k in cols_lower), None)
-                col_profit = next((cols_lower[k] for k in ['profit','profit/loss','p/l in money','beneficio'] if k in cols_lower), None)
-                col_comm   = cols_lower.get('commission', None)
-                col_swap   = cols_lower.get('swap', None)
-                col_magic  = cols_lower.get('magic', cols_lower.get('magic number', None))
-                col_symbol = next((cols_lower[k] for k in ['symbol','simbolo'] if k in cols_lower), None)
-                col_comment= next((cols_lower[k] for k in ['comment','comentario'] if k in cols_lower), None)
+            # ── Leer sección Deals ──────────────────────────────────────
+            df_deals = pd.read_excel(io.BytesIO(contenido), header=deals_row)
+            df_deals = df_deals[pd.to_numeric(df_deals['Deal'], errors='coerce').notna()].copy()
+            df_deals['Profit']     = pd.to_numeric(df_deals['Profit'],     errors='coerce').fillna(0)
+            df_deals['Commission'] = pd.to_numeric(df_deals['Commission'], errors='coerce').fillna(0)
+            df_deals['Swap']       = pd.to_numeric(df_deals['Swap'],       errors='coerce').fillna(0)
+            df_deals['Time']       = pd.to_datetime(df_deals['Time'],      errors='coerce')
+            df_deals['ProfitNeto'] = df_deals['Profit'] + df_deals['Commission'] + df_deals['Swap']
+            df_deals['Mes']        = df_deals['Time'].dt.to_period('M').astype(str)
 
-                if col_fecha is None or col_profit is None:
-                    st.error("❌ No se encontraron columnas de Fecha y/o Profit.")
-                    st.dataframe(df_hist.head(5))
-                    st.stop()
+            # Solo cierres con profit
+            df_close = df_deals[
+                (df_deals['Direction'] == 'out') & (df_deals['Profit'] != 0)
+            ].copy()
 
-                df_hist['_fecha']  = pd.to_datetime(df_hist[col_fecha], errors='coerce')
-                df_hist['_profit'] = pd.to_numeric(df_hist[col_profit].astype(str).str.replace(r'[^\d\.\-]','',regex=True), errors='coerce').fillna(0)
-                df_hist['_comm']   = pd.to_numeric(df_hist[col_comm], errors='coerce').fillna(0) if col_comm else 0
-                df_hist['_swap']   = pd.to_numeric(df_hist[col_swap], errors='coerce').fillna(0) if col_swap else 0
-                df_hist['_symbol'] = df_hist[col_symbol].astype(str) if col_symbol else "?"
-                if col_magic:
-                    df_hist['_magic'] = df_hist[col_magic].astype(str)
-                elif col_comment:
-                    df_hist['_magic'] = df_hist[col_comment].astype(str)
-                else:
-                    df_hist['_magic'] = df_hist['_symbol']
+            if df_close.empty:
+                st.warning("Sin trades cerrados encontrados en la sección Deals.")
+                st.stop()
 
-            df_hist = df_hist.dropna(subset=['_fecha'])
-            df_hist['_profit_neto'] = df_hist['_profit'] + df_hist['_comm'] + df_hist['_swap']
-            df_hist['_periodo'] = df_hist['_fecha'].dt.to_period('M').astype(str)
+            # ── Extraer nombre EA desde Comment ────────────────────────
+            def extraer_ea(row):
+                c = str(row.get('Comment', '')).strip()
+                sym = str(row.get('Symbol', '')).strip()
+                if not c or c in ['nan','First deposit','balance'] or c.startswith('['):
+                    return f"Manual_{sym}" if sym else "Sin_EA"
+                # Quitar sufijos numéricos _XX_YYY al final
+                c = re.sub(r'_\d+_\d+$', '', c)
+                c = re.sub(r'_\d+$', '', c)
+                return c.strip('_').strip()
 
-            # Filtrar profits anómalos (backtests mezclados)
-            p99 = df_hist['_profit'].abs().quantile(0.99)
-            df_hist_clean = df_hist[df_hist['_profit'].abs() <= p99 * 10].copy()
-            if len(df_hist_clean) < len(df_hist):
-                st.warning(f"⚠️ Se filtraron {len(df_hist)-len(df_hist_clean)} filas con profits anómalos (posibles backtests mezclados).")
-                df_hist = df_hist_clean
+            df_close['EA'] = df_close.apply(extraer_ea, axis=1)
 
-            df_trades_hist = df_hist[df_hist['_profit'] != 0].copy()
-            magics_hist    = sorted(df_trades_hist['_magic'].unique().tolist())
-            periodos_hist  = sorted(df_trades_hist['_periodo'].unique().tolist())
+            eas_detectados = [e for e in sorted(df_close['EA'].unique()) if e != 'Sin_EA']
+            meses = sorted(df_close['Mes'].unique())
 
-            st.success(f"✅ {len(df_trades_hist)} trades | {len(magics_hist)} EAs detectados | {len(periodos_hist)} meses")
+            st.success(f"✅ {len(df_close)} trades cerrados | {len(eas_detectados)} EAs identificados | {len(meses)} meses")
+
+            # ── MÉTRICAS GLOBALES ───────────────────────────────────────
             st.write("---")
+            st.subheader("📊 Performance Global del Portfolio")
+            g_all = df_close[df_close['Profit']>0]; l_all = df_close[df_close['Profit']<0]
+            pf_all = round(g_all['Profit'].sum()/abs(l_all['Profit'].sum()),2) if abs(l_all['Profit'].sum())>0 else 999
+            wr_all = round(len(g_all)/len(df_close)*100,1)
+            net_all = df_close['ProfitNeto'].sum()
+            comm_all = df_close['Commission'].sum()
+            exp_all = round((wr_all/100*g_all['Profit'].mean() if not g_all.empty else 0) +
+                           ((1-wr_all/100)*l_all['Profit'].mean() if not l_all.empty else 0), 2)
 
-            # ── Selector de EA ──────────────────────────
-            ea_sel = st.selectbox("Seleccioná un EA para analizar",
-                                  ["TODOS"] + magics_hist,
-                                  format_func=lambda x: f"📊 Portfolio Completo" if x=="TODOS" else f"🤖 EA {x}")
+            c1,c2,c3,c4,c5,c6 = st.columns(6)
+            c1.metric("Net Profit",    f"${net_all:,.2f}")
+            c2.metric("Profit Factor", f"{pf_all:.2f}", help="≥1.5 excelente | ≥1.2 aceptable")
+            c3.metric("Win Rate",      f"{wr_all:.1f}%")
+            c4.metric("Expectancy",    f"${exp_all:.2f}")
+            c5.metric("Total Trades",  str(len(df_close)))
+            c6.metric("Comisiones",    f"${comm_all:,.2f}")
 
-            df_ea_sel = df_trades_hist if ea_sel == "TODOS" else df_trades_hist[df_trades_hist['_magic']==ea_sel]
-
-            # ── Métricas globales del EA seleccionado ───
-            ganancias_h = df_ea_sel[df_ea_sel['_profit'] > 0]['_profit']
-            perdidas_h  = df_ea_sel[df_ea_sel['_profit'] < 0]['_profit']
-            gross_p = ganancias_h.sum()
-            gross_l = abs(perdidas_h.sum())
-            pf_h    = round(gross_p / gross_l, 2) if gross_l > 0 else float('inf')
-            wr_h    = round(len(ganancias_h) / len(df_ea_sel) * 100, 1) if len(df_ea_sel) > 0 else 0
-            net_h   = df_ea_sel['_profit_neto'].sum()
-            avg_w_h = round(ganancias_h.mean(), 2) if not ganancias_h.empty else 0
-            avg_l_h = round(perdidas_h.mean(), 2)  if not perdidas_h.empty else 0
-            exp_h   = round((wr_h/100 * avg_w_h) + ((1-wr_h/100) * avg_l_h), 2)
-            total_comm_h = df_ea_sel['_comm'].sum()
-            total_swap_h = df_ea_sel['_swap'].sum()
-
-            g1,g2,g3,g4,g5 = st.columns(5)
-            pf_str_h = f"{pf_h:.2f}" if pf_h != float('inf') else "∞"
-            g1.metric("Profit Factor",    pf_str_h)
-            g2.metric("Win Rate",         f"{wr_h:.1f}%")
-            g3.metric("Net Profit",       f"${net_h:,.2f}")
-            g4.metric("Expectancy",       f"${exp_h:,.2f}")
-            g5.metric("Total Trades",     str(len(df_ea_sel)))
-
-            g6,g7,g8,_,_ = st.columns(5)
-            g6.metric("Avg Win",          f"${avg_w_h:,.2f}")
-            g7.metric("Avg Loss",         f"${avg_l_h:,.2f}")
-            g8.metric("Costos (Com+Swap)", f"${total_comm_h+total_swap_h:,.2f}")
-
+            # ── RANKING DE EAs ─────────────────────────────────────────
             st.write("---")
+            st.subheader("🏆 Ranking de EAs por Performance")
 
-            # ── Tabla mensual ────────────────────────────
-            st.subheader("📅 Desglose Mensual")
-
-            def metricas_mes(grp):
-                g = grp[grp['_profit'] > 0]['_profit']
-                l = grp[grp['_profit'] < 0]['_profit']
-                pf_m = round(g.sum()/abs(l.sum()), 2) if abs(l.sum()) > 0 else float('inf')
-                wr_m = round(len(g)/len(grp)*100, 1) if len(grp) > 0 else 0
-                return pd.Series({
-                    'Trades':      len(grp),
-                    'Net Profit':  round(grp['_profit_neto'].sum(), 2),
-                    'Gross Profit':round(g.sum(), 2),
-                    'Gross Loss':  round(l.sum(), 2),
-                    'PF':          pf_m if pf_m != float('inf') else 999,
-                    'WR%':         wr_m,
-                    'Avg Win':     round(g.mean(), 2) if not g.empty else 0,
-                    'Avg Loss':    round(l.mean(), 2) if not l.empty else 0,
-                    'Comisiones':  round(grp['_comm'].sum(), 2),
-                    'Swap':        round(grp['_swap'].sum(), 2),
+            rows_rank = []
+            for ea in sorted(df_close['EA'].unique()):
+                d = df_close[df_close['EA']==ea]
+                g = d[d['Profit']>0]; l = d[d['Profit']<0]
+                pf  = round(g['Profit'].sum()/abs(l['Profit'].sum()),2) if abs(l['Profit'].sum())>0 else 999
+                wr  = round(len(g)/len(d)*100,1) if len(d)>0 else 0
+                net = round(d['ProfitNeto'].sum(),2)
+                avg_w = round(g['Profit'].mean(),2) if not g.empty else 0
+                avg_l = round(l['Profit'].mean(),2) if not l.empty else 0
+                exp = round((wr/100*avg_w)+((1-wr/100)*avg_l),2)
+                comm_ea = round(d['Commission'].sum(),2)
+                # DD máximo de la equity de este EA
+                eq_ea = d.sort_values('Time')['ProfitNeto'].cumsum()
+                peak_ea = eq_ea.cummax()
+                max_dd = round((eq_ea - peak_ea).min(), 2)
+                # Semáforo
+                sem = "🟢" if pf>=1.5 and wr>=55 else "🟡" if pf>=1.2 else "🔴"
+                rows_rank.append({
+                    "Estado": sem, "EA": ea, "Trades": len(d),
+                    "Net Profit": f"${net:,.2f}",
+                    "PF": f"{pf:.2f}", "WR%": f"{wr:.1f}%",
+                    "Avg Win": f"${avg_w:.2f}", "Avg Loss": f"${avg_l:.2f}",
+                    "Expectancy": f"${exp:.2f}",
+                    "Max DD": f"${max_dd:,.2f}",
+                    "Comisiones": f"${comm_ea:,.2f}",
                 })
 
-            df_mensual = df_ea_sel.groupby('_periodo').apply(metricas_mes).reset_index()
-            df_mensual.rename(columns={'_periodo':'Mes'}, inplace=True)
+            df_rank = pd.DataFrame(rows_rank).sort_values("Net Profit", ascending=False)
+            st.dataframe(df_rank, use_container_width=True, hide_index=True)
 
-            # Semáforo degradación: últimos 2 meses vs promedio histórico
-            if len(df_mensual) >= 3:
-                pf_hist_avg = df_mensual['PF'][:-2].mean()
-                wr_hist_avg = df_mensual['WR%'][:-2].mean()
-                np_hist_avg = df_mensual['Net Profit'][:-2].mean()
+            # Gráfico barras PF por EA
+            pf_vals = [float(r["PF"]) for r in rows_rank]
+            ea_names = [r["EA"] for r in rows_rank]
+            fig_rank = go.Figure(go.Bar(
+                x=ea_names, y=pf_vals,
+                marker_color=["#2ecc71" if v>=1.5 else "#f39c12" if v>=1.2 else "#e74c3c" for v in pf_vals],
+                text=[f"{v:.2f}" for v in pf_vals], textposition='outside'
+            ))
+            fig_rank.add_hline(y=1.5, line_dash="dash", line_color="#2ecc71", annotation_text="1.5 objetivo")
+            fig_rank.add_hline(y=1.2, line_dash="dash", line_color="#f39c12", annotation_text="1.2 mínimo")
+            fig_rank.update_layout(template="plotly_dark", height=320,
+                                   xaxis_title="EA", yaxis_title="Profit Factor",
+                                   margin=dict(t=20,b=20))
+            st.plotly_chart(fig_rank, use_container_width=True)
 
-                def semaforo_pf(val):
-                    if val >= pf_hist_avg * 0.9: return '🟢'
-                    if val >= pf_hist_avg * 0.7: return '🟡'
-                    return '🔴'
-                def semaforo_wr(val):
-                    if val >= wr_hist_avg * 0.9: return '🟢'
-                    if val >= wr_hist_avg * 0.7: return '🟡'
-                    return '🔴'
-
-                df_mensual['Estado PF'] = df_mensual['PF'].apply(semaforo_pf)
-                df_mensual['Estado WR'] = df_mensual['WR%'].apply(semaforo_wr)
-
-                st.caption(f"Semáforo basado en promedio histórico — PF ref: {pf_hist_avg:.2f} | WR ref: {wr_hist_avg:.1f}%")
-
-            st.dataframe(df_mensual, use_container_width=True, hide_index=True)
-
-            # ── Gráfico mensual ──────────────────────────
+            # ── TABLA MENSUAL POR EA (PIVOT) ────────────────────────────
             st.write("---")
-            st.subheader("📈 Equity Acumulada & Profit Mensual")
+            st.subheader("📅 Profit Mensual por EA — Heatmap")
+            pivot = df_close.groupby(['Mes','EA'])['ProfitNeto'].sum().unstack(fill_value=0)
 
-            fig3 = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                                 row_heights=[0.6, 0.4], vertical_spacing=0.06,
-                                 subplot_titles=("Equity Acumulada", "Profit Neto Mensual"))
+            # Agregar totales
+            pivot['TOTAL'] = pivot.sum(axis=1)
+            pivot.loc['TOTAL'] = pivot.sum()
 
-            equity_acum = df_mensual['Net Profit'].cumsum()
-            fig3.add_trace(go.Scatter(
-                x=df_mensual['Mes'], y=equity_acum,
-                name="Equity Acum.", line=dict(color='#00d4ff', width=2),
+            # Colorear con semáforo
+            def estilo_pivot(val):
+                if isinstance(val, (int,float)):
+                    if val > 200:   return 'background-color: #1a4a1a; color: #2ecc71'
+                    if val > 0:     return 'background-color: #0d2b0d; color: #88cc88'
+                    if val < -200:  return 'background-color: #4a0000; color: #e74c3c'
+                    if val < 0:     return 'background-color: #2b0d0d; color: #cc8888'
+                return ''
+
+            pivot_fmt = pivot.round(2)
+            st.dataframe(
+                pivot_fmt.style.applymap(estilo_pivot),
+                use_container_width=True
+            )
+
+            # ── ANÁLISIS INDIVIDUAL POR EA ──────────────────────────────
+            st.write("---")
+            st.subheader("🔍 Análisis Individual por EA")
+
+            ea_sel = st.selectbox("Seleccioná un EA",
+                                  ["TODOS"] + sorted(df_close['EA'].unique().tolist()),
+                                  format_func=lambda x: "📊 Portfolio Completo" if x=="TODOS" else f"🤖 {x}")
+
+            df_ea_sel = df_close if ea_sel=="TODOS" else df_close[df_close['EA']==ea_sel]
+
+            # Equity acumulada
+            df_ea_plot = df_ea_sel.sort_values('Time').copy()
+            df_ea_plot['EquityAcum'] = df_ea_plot['ProfitNeto'].cumsum()
+            peak = df_ea_plot['EquityAcum'].cummax()
+            df_ea_plot['DD_pct'] = (df_ea_plot['EquityAcum'] - peak) / peak.replace(0,1) * 100
+
+            fig_ea = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                                   row_heights=[0.65,0.35], vertical_spacing=0.06,
+                                   subplot_titles=("Equity Acumulada", "Drawdown %"))
+            fig_ea.add_trace(go.Scatter(
+                x=df_ea_plot['Time'], y=df_ea_plot['EquityAcum'],
+                name="Equity", line=dict(color='#00d4ff', width=2),
                 fill='tozeroy', fillcolor='rgba(0,212,255,0.08)'
             ), row=1, col=1)
-
-            colores_bars = ['#2ecc71' if v >= 0 else '#e74c3c' for v in df_mensual['Net Profit']]
-            fig3.add_trace(go.Bar(
-                x=df_mensual['Mes'], y=df_mensual['Net Profit'],
-                name="Profit Mensual", marker_color=colores_bars
+            fig_ea.add_trace(go.Scatter(
+                x=df_ea_plot['Time'], y=df_ea_plot['DD_pct'],
+                name="DD%", line=dict(color='#e74c3c', width=1.5),
+                fill='tozeroy', fillcolor='rgba(231,76,60,0.1)'
             ), row=2, col=1)
+            fig_ea.add_hline(y=0,   line_dash="dot", line_color="#444", row=1, col=1)
+            fig_ea.add_hline(y=-10, line_dash="dash", line_color="#e74c3c",
+                             annotation_text="-10% límite DZ", row=2, col=1)
+            fig_ea.update_layout(template="plotly_dark", height=480,
+                                 margin=dict(t=30,b=10), showlegend=False)
+            st.plotly_chart(fig_ea, use_container_width=True)
 
-            fig3.add_hline(y=0, line_dash="dot", line_color="#666", row=2, col=1)
-            fig3.update_layout(template="plotly_dark", height=480,
-                               margin=dict(t=30,b=20), showlegend=False)
-            st.plotly_chart(fig3, use_container_width=True)
+            # Distribución de profits
+            fig_dist = go.Figure()
+            fig_dist.add_trace(go.Histogram(
+                x=df_ea_sel['Profit'],
+                nbinsx=40,
+                marker_color='#00d4ff',
+                opacity=0.7,
+                name="Distribución de P&L"
+            ))
+            fig_dist.add_vline(x=0, line_dash="dash", line_color="white")
+            fig_dist.add_vline(x=df_ea_sel['Profit'].mean(),
+                               line_dash="dot", line_color="#f39c12",
+                               annotation_text=f"Media ${df_ea_sel['Profit'].mean():.2f}")
+            fig_dist.update_layout(template="plotly_dark", height=280,
+                                   xaxis_title="Profit por Trade ($)",
+                                   yaxis_title="Frecuencia",
+                                   margin=dict(t=20,b=20))
+            st.plotly_chart(fig_dist, use_container_width=True)
 
-            # ── Comparador entre EAs ─────────────────────
-            if ea_sel == "TODOS" and len(magics_hist) > 1:
-                st.write("---")
-                st.subheader("🔬 Ranking de EAs por Profit Factor")
-
-                resumen_eas = []
-                for mg in magics_hist:
-                    d = df_trades_hist[df_trades_hist['_magic']==mg]
-                    g = d[d['_profit']>0]['_profit']
-                    l = d[d['_profit']<0]['_profit']
-                    pf_ea = round(g.sum()/abs(l.sum()),2) if abs(l.sum())>0 else 999
-                    resumen_eas.append({
-                        'EA (Magic)':   mg,
-                        'Trades':       len(d),
-                        'Net Profit':   round(d['_profit_neto'].sum(), 2),
-                        'PF':           pf_ea,
-                        'WR%':          round(len(g)/len(d)*100,1) if len(d)>0 else 0,
-                        'Avg Win':      round(g.mean(),2) if not g.empty else 0,
-                        'Avg Loss':     round(l.mean(),2) if not l.empty else 0,
-                        'Costos':       round(d['_comm'].sum()+d['_swap'].sum(),2),
-                    })
-                df_rank = pd.DataFrame(resumen_eas).sort_values('PF', ascending=False).reset_index(drop=True)
-
-                # Barras de PF por EA
-                fig_rank = go.Figure(go.Bar(
-                    x=df_rank['EA (Magic)'].astype(str),
-                    y=df_rank['PF'],
-                    marker_color=['#2ecc71' if v>=1.5 else '#f39c12' if v>=1.2 else '#e74c3c'
-                                  for v in df_rank['PF']],
-                    text=df_rank['PF'].apply(lambda x: f"{x:.2f}"),
-                    textposition='outside'
-                ))
-                fig_rank.add_hline(y=1.5, line_dash="dash", line_color="#2ecc71",
-                                   annotation_text="PF 1.5 objetivo")
-                fig_rank.add_hline(y=1.2, line_dash="dash", line_color="#f39c12",
-                                   annotation_text="PF 1.2 mínimo")
-                fig_rank.update_layout(template="plotly_dark", height=320,
-                                       xaxis_title="EA", yaxis_title="Profit Factor",
-                                       margin=dict(t=20,b=20))
-                st.plotly_chart(fig_rank, use_container_width=True)
-                st.dataframe(df_rank, use_container_width=True, hide_index=True)
+            # Tabla de trades del EA seleccionado
+            with st.expander("📋 Ver todos los trades"):
+                cols_show = ['Time','Symbol','Type','Direction','Volume','Price','Commission','Swap','Profit','ProfitNeto','EA','Comment']
+                cols_show = [c for c in cols_show if c in df_ea_sel.columns]
+                st.dataframe(df_ea_sel[cols_show].sort_values('Time', ascending=False).reset_index(drop=True),
+                             use_container_width=True)
 
         except Exception as e:
-            st.error(f"❌ Error procesando historial: {e}")
             import traceback
+            st.error(f"❌ Error: {e}")
             st.code(traceback.format_exc())
     else:
-        st.info("💡 Exportá el historial desde MT5: Account History → click derecho → Save as Report (HTML) o Save as Detailed Report (CSV)")
+        st.info("💡 Exportá desde MT5 → History → click derecho → **Report → Open XML (MS Office Excel 2007)**")
         st.markdown("""
-        **Cómo exportar desde MT5:**
-        1. `View → Terminal → Account History`
-        2. Seleccioná el período completo (click derecho → All History)
-        3. Click derecho → **Save as Detailed Report** → guardá como HTML
-        4. Subí ese archivo aquí
+        **Pasos exactos:**
+        1. MT5 → pestaña **History** (abajo)
+        2. Click derecho en la tabla
+        3. **Report → Open XML (MS Office Excel 2007)**
+        4. Guardá el archivo y subilo acá
         """)
 
-# ══════════════════════════════════════════════
-# TAB 4 — MULTI-CUENTA
-# ══════════════════════════════════════════════
+
 with tab4:
     st.subheader("🌐 Dashboard Multi-Cuenta — Todas las Instancias MT5")
 
